@@ -15,6 +15,7 @@ use super::{
     v0,
 };
 
+mod cap_detection;
 mod player_state;
 mod skill_state;
 
@@ -24,16 +25,32 @@ pub struct AdjustedDamageInstance<'a> {
     pub event: &'a DamageEvent,
     pub player_data: Option<&'a PlayerData>,
     pub stun_damage: f64,
+    pub is_capped: bool,
 }
 
 impl<'a> AdjustedDamageInstance<'a> {
+    /// Build an instance using the simple cap rule (`damage >= cap`). Used by the
+    /// live single-pass path, which cannot yet know the encounter's crit multipliers.
     pub fn from_damage_event(event: &'a DamageEvent, player_data: Option<&'a PlayerData>) -> Self {
+        Self::from_damage_event_with_multipliers(event, player_data, &[])
+    }
+
+    /// Build an instance using crit-aware cap detection against the encounter's
+    /// learned crit multipliers. An empty slice falls back to the simple rule, so
+    /// this is the single authority for `is_capped`.
+    pub fn from_damage_event_with_multipliers(
+        event: &'a DamageEvent,
+        player_data: Option<&'a PlayerData>,
+        crit_multipliers: &[f64],
+    ) -> Self {
         let stun_damage = event.stun_value.unwrap_or(0.0) as f64;
+        let is_capped = cap_detection::is_capped(event.damage, event.damage_cap, crit_multipliers);
 
         Self {
             event,
             player_data,
             stun_damage,
+            is_capped,
         }
     }
 }
@@ -380,6 +397,7 @@ impl DerivedEncounterState {
                 total_stun_value: 0.0,
                 skill_breakdown: Vec::new(),
                 last_known_pet_skill: None,
+                capped_hits: 0,
             });
 
         // Update player stats from damage event.
@@ -467,10 +485,24 @@ impl Parser {
         Ok(Self::from_encounter(encounter))
     }
 
+    /// Learn the encounter's crit multipliers from all damage events (used for
+    /// crit-aware cap detection during reparse).
+    fn learn_crit_multipliers(&self) -> Vec<f64> {
+        let at_or_over = self.encounter.event_log().filter_map(|(_, event)| {
+            if let Message::DamageEvent(e) = event {
+                e.damage_cap.map(|cap| (e.damage, cap))
+            } else {
+                None
+            }
+        });
+        cap_detection::learn_crit_multipliers(at_or_over)
+    }
+
     /// Reparses derived state from the current encounter.
     pub fn reparse(&mut self) {
         self.derived_state = Default::default();
         self.derived_state.start(self.start_time());
+        let crit_multipliers = self.learn_crit_multipliers();
 
         for (timestamp, event) in self.encounter.event_log() {
             self.derived_state.end_time = *timestamp;
@@ -484,8 +516,11 @@ impl Parser {
                         .flatten()
                         .find(|player| player.actor_index == event.source.parent_index);
 
-                    let damage_instance =
-                        AdjustedDamageInstance::from_damage_event(event, player_data);
+                    let damage_instance = AdjustedDamageInstance::from_damage_event_with_multipliers(
+                        event,
+                        player_data,
+                        &crit_multipliers,
+                    );
 
                     self.derived_state
                         .process_damage_event(*timestamp, &damage_instance);
@@ -499,6 +534,7 @@ impl Parser {
     pub fn reparse_with_options(&mut self, targets: &[EnemyType]) {
         self.derived_state = Default::default();
         self.derived_state.start(self.start_time());
+        let crit_multipliers = self.learn_crit_multipliers();
 
         for (timestamp, event) in self.encounter.event_log() {
             self.derived_state.end_time = *timestamp;
@@ -518,7 +554,11 @@ impl Parser {
                             .find(|player| player.actor_index == event.source.parent_index);
 
                         let damage_instance =
-                            AdjustedDamageInstance::from_damage_event(event, player_data);
+                            AdjustedDamageInstance::from_damage_event_with_multipliers(
+                                event,
+                                player_data,
+                                &crit_multipliers,
+                            );
 
                         self.derived_state
                             .process_damage_event(*timestamp, &damage_instance);
@@ -1052,5 +1092,129 @@ mod tests {
         assert_eq!(parser.derived_state.start_time, 1_000);
         assert_eq!(parser.derived_state.end_time, 5_000);
         assert_eq!(parser.derived_state.duration(), 4_000);
+    }
+
+    #[test]
+    fn capped_hits_aggregated_through_reparse() {
+        let mut parser = Parser::default();
+
+        // A hit that reached its cap, followed by one that did not.
+        parser.encounter.raw_event_log.push((
+            1_000,
+            Message::DamageEvent(DamageEvent {
+                source: Actor {
+                    index: 0,
+                    actor_type: 0,
+                    parent_actor_type: 0,
+                    parent_index: 0,
+                },
+                target: Actor {
+                    index: 0,
+                    actor_type: 0,
+                    parent_actor_type: 0,
+                    parent_index: 0,
+                },
+                damage: 99_999,
+                flags: 0,
+                action_id: ActionType::Normal(1),
+                attack_rate: None,
+                stun_value: None,
+                damage_cap: Some(99_999),
+            }),
+        ));
+
+        parser.encounter.raw_event_log.push((
+            2_000,
+            Message::DamageEvent(DamageEvent {
+                source: Actor {
+                    index: 0,
+                    actor_type: 0,
+                    parent_actor_type: 0,
+                    parent_index: 0,
+                },
+                target: Actor {
+                    index: 0,
+                    actor_type: 0,
+                    parent_actor_type: 0,
+                    parent_index: 0,
+                },
+                damage: 100,
+                flags: 0,
+                action_id: ActionType::Normal(1),
+                attack_rate: None,
+                stun_value: None,
+                damage_cap: Some(99_999),
+            }),
+        ));
+
+        parser.reparse();
+
+        let player = parser
+            .derived_state
+            .party
+            .get(&0)
+            .expect("player should be present after reparse");
+        assert_eq!(player.capped_hits, 1);
+        assert_eq!(player.skill_breakdown.len(), 1);
+        assert_eq!(player.skill_breakdown[0].capped_hits, 1);
+        assert_eq!(player.skill_breakdown[0].hits, 2);
+    }
+
+    #[test]
+    fn reparse_uses_crit_aware_cap_detection() {
+        fn dmg_event(damage: i32, cap: i32) -> DamageEvent {
+            DamageEvent {
+                source: Actor {
+                    index: 0,
+                    actor_type: 0,
+                    parent_actor_type: 0,
+                    parent_index: 0,
+                },
+                target: Actor {
+                    index: 0,
+                    actor_type: 0,
+                    parent_actor_type: 0,
+                    parent_index: 0,
+                },
+                damage,
+                flags: 0,
+                action_id: ActionType::Normal(1),
+                attack_rate: None,
+                stun_value: None,
+                damage_cap: Some(cap),
+            }
+        }
+
+        let mut parser = Parser::default();
+        let cap = 1000;
+        let mut ts = 0i64;
+        let mut push = |parser: &mut Parser, damage: i32| {
+            ts += 1;
+            parser
+                .encounter
+                .raw_event_log
+                .push((ts, Message::DamageEvent(dmg_event(damage, cap))));
+        };
+
+        // Establish two clear crit multipliers: x1.0 (exactly capped) and x1.2.
+        for _ in 0..50 {
+            push(&mut parser, 1000); // x1.0  -> capped
+            push(&mut parser, 1200); // x1.2  -> capped (crit on capped base)
+        }
+        // One hit that exceeds the cap but lands BETWEEN the learned peaks (x1.1):
+        // an uncapped near-cap crit. The simple `damage >= cap` rule would count it;
+        // the crit-aware rule must NOT.
+        push(&mut parser, 1100);
+
+        parser.reparse();
+
+        let player = parser.derived_state.party.get(&0).expect("player present");
+        // 100 capped hits (50 at x1.0 + 50 at x1.2); the lone x1.1 hit is excluded.
+        assert_eq!(player.skill_breakdown[0].hits, 101);
+        assert_eq!(player.capped_hits, 100);
+
+        // Sanity: the simple rule WOULD have counted the x1.1 hit (proving the
+        // crit-aware path changed the outcome).
+        assert!(super::cap_detection::is_capped(1100, Some(1000), &[]));
     }
 }
