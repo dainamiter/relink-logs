@@ -1,16 +1,53 @@
 name: Release
 
-# Builds + signs the MSI and drafts a GitHub Release on a version tag push.
-# Requires the TAURI_PRIVATE_KEY repo secret.
+# On every push to main, if the version in package.json doesn't already have a
+# matching tag, create the tag and build + sign + publish a GitHub Release.
+# A merge that doesn't bump the version is a no-op. Requires the
+# TAURI_PRIVATE_KEY repo secret.
 
 on:
   push:
-    tags:
-      - "[0-9]+.[0-9]+.[0-9]+"
-      - "[0-9]+.[0-9]+.[0-9]+-*"
+    branches:
+      - main
 
 jobs:
+  tag:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # required to push the tag
+    outputs:
+      version: ${{ steps.check.outputs.version }}
+      should_release: ${{ steps.check.outputs.should_release }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # need tags to detect whether this version is already released
+
+      - name: Determine version and whether to release
+        id: check
+        shell: bash
+        run: |
+          version="$(node -p "require('./package.json').version")"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          if git rev-parse "$version" >/dev/null 2>&1; then
+            echo "Tag $version already exists; nothing to release."
+            echo "should_release=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "New version $version; will tag and release."
+            echo "should_release=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create and push tag
+        if: steps.check.outputs.should_release == 'true'
+        shell: bash
+        run: |
+          version="${{ steps.check.outputs.version }}"
+          git tag "$version"
+          git push origin "$version"
+
   release:
+    needs: tag
+    if: needs.tag.outputs.should_release == 'true'
     runs-on: windows-latest
     permissions:
       contents: write # required to create the GitHub Release
@@ -51,9 +88,8 @@ jobs:
           TAURI_PRIVATE_KEY: ${{ secrets.TAURI_PRIVATE_KEY }}
           TAURI_KEY_PASSWORD: ${{ secrets.TAURI_KEY_PASSWORD }}
         with:
-          # The tag that triggered the workflow becomes the release tag/name.
-          tagName: ${{ github.ref_name }}
-          releaseName: "GBFR Logs ${{ github.ref_name }}"
+          tagName: ${{ needs.tag.outputs.version }}
+          releaseName: "GBFR Logs ${{ needs.tag.outputs.version }}"
           releaseBody: "See the assets below to download and install. Make sure to save and exit before updating."
           # Publish (not draft) so releases/latest/download/latest.json resolves —
           # that auto-generated manifest is the updater endpoint. tauri-action
