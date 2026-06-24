@@ -58,6 +58,7 @@ export const SkillBreakdown = ({ player, color }: SkillBreakdownProps) => {
               <th className="header-column text-center">Max</th>
               <th className="header-column text-center">Avg</th>
               <th className="header-column text-center">%</th>
+              <th className="header-column text-center">Cap</th>
             </tr>
           </thead>
           <tbody className="transparent-bg">
