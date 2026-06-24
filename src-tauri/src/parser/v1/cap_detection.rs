@@ -12,17 +12,17 @@
 
 /// Learn the set of crit multipliers for an encounter from the hits whose damage
 /// reached or exceeded their cap. The multipliers are the recurring `damage/cap`
-/// ratios (>= ~1.0). Returned sorted ascending.
+/// ratios (>= ~1.0). Order is unspecified (callers match by value, not position).
 ///
 /// `at_or_over_cap` yields `(damage, cap)` for every hit with `cap > 0` and
 /// `damage >= cap`.
 pub fn learn_crit_multipliers(at_or_over_cap: impl Iterator<Item = (i32, i32)>) -> Vec<f64> {
-    use std::collections::BTreeMap;
+    use std::collections::HashMap;
 
     // Fine bucket (0.002) so distinct multipliers like 1.188 are not merged into a
     // coarse 0.01 bucket whose center would then mispredict cap*m.
     const BUCKET: f64 = 0.002;
-    let mut counts: BTreeMap<i64, u64> = BTreeMap::new();
+    let mut counts: HashMap<i64, u64> = HashMap::new();
     let mut total: u64 = 0;
     for (damage, cap) in at_or_over_cap {
         if cap <= 0 || damage < cap {

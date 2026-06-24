@@ -29,9 +29,22 @@ pub struct AdjustedDamageInstance<'a> {
 }
 
 impl<'a> AdjustedDamageInstance<'a> {
+    /// Build an instance using the simple cap rule (`damage >= cap`). Used by the
+    /// live single-pass path, which cannot yet know the encounter's crit multipliers.
     pub fn from_damage_event(event: &'a DamageEvent, player_data: Option<&'a PlayerData>) -> Self {
+        Self::from_damage_event_with_multipliers(event, player_data, &[])
+    }
+
+    /// Build an instance using crit-aware cap detection against the encounter's
+    /// learned crit multipliers. An empty slice falls back to the simple rule, so
+    /// this is the single authority for `is_capped`.
+    pub fn from_damage_event_with_multipliers(
+        event: &'a DamageEvent,
+        player_data: Option<&'a PlayerData>,
+        crit_multipliers: &[f64],
+    ) -> Self {
         let stun_damage = event.stun_value.unwrap_or(0.0) as f64;
-        let is_capped = matches!(event.damage_cap, Some(cap) if cap > 0 && event.damage >= cap);
+        let is_capped = cap_detection::is_capped(event.damage, event.damage_cap, crit_multipliers);
 
         Self {
             event,
@@ -319,11 +332,6 @@ pub struct DerivedEncounterState {
     pub party: HashMap<u32, PlayerState>,
     /// Derived target stats, damage done to each target.
     targets: HashMap<u32, EnemyState>,
-    /// Crit multipliers learned for this encounter, used for crit-aware cap
-    /// detection during reparse. Empty during live single-pass updates (which fall
-    /// back to the simple `damage >= cap` rule until the next re-derive).
-    #[serde(skip)]
-    crit_multipliers: Vec<f64>,
 }
 
 impl Default for DerivedEncounterState {
@@ -338,7 +346,6 @@ impl Default for DerivedEncounterState {
             status: ParserStatus::Waiting,
             party: HashMap::new(),
             targets: HashMap::new(),
-            crit_multipliers: Vec::new(),
         }
     }
 }
@@ -495,7 +502,7 @@ impl Parser {
     pub fn reparse(&mut self) {
         self.derived_state = Default::default();
         self.derived_state.start(self.start_time());
-        self.derived_state.crit_multipliers = self.learn_crit_multipliers();
+        let crit_multipliers = self.learn_crit_multipliers();
 
         for (timestamp, event) in self.encounter.event_log() {
             self.derived_state.end_time = *timestamp;
@@ -509,12 +516,10 @@ impl Parser {
                         .flatten()
                         .find(|player| player.actor_index == event.source.parent_index);
 
-                    let mut damage_instance =
-                        AdjustedDamageInstance::from_damage_event(event, player_data);
-                    damage_instance.is_capped = cap_detection::is_capped(
-                        event.damage,
-                        event.damage_cap,
-                        &self.derived_state.crit_multipliers,
+                    let damage_instance = AdjustedDamageInstance::from_damage_event_with_multipliers(
+                        event,
+                        player_data,
+                        &crit_multipliers,
                     );
 
                     self.derived_state
@@ -529,7 +534,7 @@ impl Parser {
     pub fn reparse_with_options(&mut self, targets: &[EnemyType]) {
         self.derived_state = Default::default();
         self.derived_state.start(self.start_time());
-        self.derived_state.crit_multipliers = self.learn_crit_multipliers();
+        let crit_multipliers = self.learn_crit_multipliers();
 
         for (timestamp, event) in self.encounter.event_log() {
             self.derived_state.end_time = *timestamp;
@@ -548,13 +553,12 @@ impl Parser {
                             .flatten()
                             .find(|player| player.actor_index == event.source.parent_index);
 
-                        let mut damage_instance =
-                            AdjustedDamageInstance::from_damage_event(event, player_data);
-                        damage_instance.is_capped = cap_detection::is_capped(
-                            event.damage,
-                            event.damage_cap,
-                            &self.derived_state.crit_multipliers,
-                        );
+                        let damage_instance =
+                            AdjustedDamageInstance::from_damage_event_with_multipliers(
+                                event,
+                                player_data,
+                                &crit_multipliers,
+                            );
 
                         self.derived_state
                             .process_damage_event(*timestamp, &damage_instance);
