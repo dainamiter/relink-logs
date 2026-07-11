@@ -130,17 +130,20 @@ impl OnProcessDamageHook {
             use std::fmt::Write as _;
             static DIAG_N: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
             if crate::hooks::diag::first_n(&DIAG_N, 500) {
-                let action_id = unsafe { (a2.byte_add(0x16c) as *const u32).read() };
-                let dmg_d0 = unsafe { (a2.byte_add(0xd0) as *const i32).read() };
-                let dmg_d4 = unsafe { (a2.byte_add(0xd4) as *const i32).read() };
-                let rate_d8 = unsafe { (a2.byte_add(0xd8) as *const f32).read() };
-                let rate_dc = unsafe { (a2.byte_add(0xdc) as *const f32).read() };
-                let floor = unsafe { (a2.byte_add(0x2b8) as *const i32).read() };
-                let cap = unsafe { (a2.byte_add(0x2bc) as *const i32).read() };
-                let precap_f32 = unsafe { (a2.byte_add(0x2d4) as *const f32).read() };
+                // read_unaligned throughout: this probe exists to be edited to read arbitrary
+                // (possibly unaligned) offsets while chasing shifted fields after a patch, so a
+                // future non-4-aligned offset must not become UB / fault the game thread.
+                let action_id = unsafe { (a2.byte_add(0x16c) as *const u32).read_unaligned() };
+                let dmg_d0 = unsafe { (a2.byte_add(0xd0) as *const i32).read_unaligned() };
+                let dmg_d4 = unsafe { (a2.byte_add(0xd4) as *const i32).read_unaligned() };
+                let rate_d8 = unsafe { (a2.byte_add(0xd8) as *const f32).read_unaligned() };
+                let rate_dc = unsafe { (a2.byte_add(0xdc) as *const f32).read_unaligned() };
+                let floor = unsafe { (a2.byte_add(0x2b8) as *const i32).read_unaligned() };
+                let cap = unsafe { (a2.byte_add(0x2bc) as *const i32).read_unaligned() };
+                let precap_f32 = unsafe { (a2.byte_add(0x2d4) as *const f32).read_unaligned() };
                 let mut dump = String::new();
                 for off in (0xc0usize..0x340).step_by(4) {
-                    let v = unsafe { (a2.byte_add(off) as *const u32).read() };
+                    let v = unsafe { (a2.byte_add(off) as *const u32).read_unaligned() };
                     if v != 0 {
                         let _ = write!(dump, "[0x{:x}]={} ", off, v);
                     }

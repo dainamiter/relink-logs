@@ -79,7 +79,7 @@ mod imp {
 
             unsafe {
                 let func: DispatcherFunc = std::mem::transmute(addr);
-                Dispatcher.initialize(func, move |a1, a2| run(a1, a2))?;
+                Dispatcher.initialize(func, run)?;
                 Dispatcher.enable()?;
             }
 

@@ -171,9 +171,17 @@ impl OnAttemptSBAHook {
     fn run(&self, a1: *const usize, a2: f32) -> usize {
         // hookdiag: sba_attempt still resolves on v2.0.2; timestamp + callers let us
         // correlate the in-game SBA button press to the SBA manager code that also drives
-        // the (broken) sba_update/collision/continue handlers.
+        // the (broken) sba_update/collision/continue handlers. The caller RVA is stable, so
+        // rate-limit the (relatively expensive) stack walk to the first few presses — same
+        // policy as process_damage — while still timestamping every attempt.
         crate::hooks::diag::ev!("sba_attempt", "a2={a2}");
-        crate::hooks::diag::log_callers("sba_attempt");
+        #[cfg(feature = "hookdiag")]
+        {
+            static N: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+            if crate::hooks::diag::first_n(&N, 3) {
+                crate::hooks::diag::log_callers("sba_attempt");
+            }
+        }
 
         let ret = unsafe { OnSBAAttempt.call(a1, a2) };
 
@@ -349,6 +357,16 @@ impl OnRemoteSBAUpdateHook {
 
     fn run(&self, player_entity: *const usize, a2: *const usize, a3: f32, a4: f32) -> usize {
         let sba_offset = SBA_OFFSET.load(Ordering::Relaxed);
+
+        // If the sba_offset signature failed to resolve (setup_globals now logs-and-continues
+        // rather than aborting, leaving SBA_OFFSET at 0), reading the gauge at
+        // player_entity+0+0x7C yields a garbage f32 and would emit bogus OnUpdateSBA/
+        // OnPerformSBA events (e.g. a spurious "performed SBA" when the read happens to be 0.0).
+        // Still call the original so game behaviour is unaffected, but skip our observation.
+        if sba_offset == 0 {
+            return unsafe { OnRemoteSBAUpdate.call(player_entity, a2, a3, a4) };
+        }
+
         let sba_value_ptr =
             unsafe { player_entity.byte_add(sba_offset as usize).byte_add(0x7C) } as *const f32;
         let old_sba_value = unsafe { sba_value_ptr.read() };

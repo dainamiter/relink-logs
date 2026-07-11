@@ -143,9 +143,15 @@ fn readable(addr: usize, len: usize) -> bool {
     if (mbi.Protect & (PAGE_NOACCESS | PAGE_GUARD)).0 != 0 {
         return false;
     }
-    // Ensure the whole [addr, addr+len) span stays within this committed region.
-    let region_end = mbi.BaseAddress as usize + mbi.RegionSize;
-    addr + len <= region_end
+    // Ensure the whole [addr, addr+len) span stays within this committed region. Use checked
+    // arithmetic so an addr+len that would wrap past the top of the address space is rejected
+    // (upholds the "can NEVER fault" contract for arbitrary inputs, not just the pre-filtered
+    // pointers today's callers pass).
+    let region_end = (mbi.BaseAddress as usize).saturating_add(mbi.RegionSize);
+    match addr.checked_add(len) {
+        Some(end) => end <= region_end,
+        None => false,
+    }
 }
 
 /// Scan a player-instance pointer for the display/character name and party data that
@@ -168,18 +174,31 @@ pub fn probe_player_instance(instance: usize) {
     if instance == 0 {
         return;
     }
+    // Dedup this address (so repeated hits from the same attacker don't re-log), but do NOT
+    // consume a budget slot yet — the MAX budget is for successfully-dumped party members, and
+    // an unreadable "plausible pointer" must not exhaust it and starve real instances.
     {
         let mut seen = SEEN.lock().unwrap();
-        if seen.contains(&instance) || seen.len() >= MAX {
+        if seen.contains(&instance) {
             return;
         }
         seen.push(instance);
     }
 
-    // Bail immediately if the instance itself isn't fully readable.
+    // Bail immediately if the instance itself isn't fully readable (does not count toward MAX).
     if !readable(instance, 0x400) {
         log::info!("HOOKDIAG probe instance={instance:#x} NOT READABLE (skipped)");
         return;
+    }
+
+    // Enforce the dump budget only for readable instances we're actually about to probe.
+    {
+        static DUMPED: Mutex<usize> = Mutex::new(0);
+        let mut dumped = DUMPED.lock().unwrap();
+        if *dumped >= MAX {
+            return;
+        }
+        *dumped += 1;
     }
 
     let base = instance as *const u8;
@@ -285,6 +304,7 @@ pub fn set_module_base(_base: usize) {}
 pub fn log_addr(_label: &str, _addr: usize) {}
 #[cfg(not(feature = "hookdiag"))]
 #[inline(always)]
+#[allow(dead_code)] // now only called under `hookdiag`; shim kept for symmetry
 pub fn log_callers(_label: &str) {}
 #[cfg(not(feature = "hookdiag"))]
 #[inline(always)]

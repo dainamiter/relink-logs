@@ -32,7 +32,7 @@ fn main() {
     let mode = args.get(2).map(|s| s.as_str()).unwrap_or("slice_u32");
 
     let exe_path = env::var("GBFR_EXE").unwrap_or_else(|_| DEFAULT_EXE.to_string());
-    let file_bytes = std::fs::read(&exe_path).expect("could not read game exe");
+    let file_bytes = std::fs::read(exe_path).expect("could not read game exe");
     let pe = PeFile::from_bytes(&file_bytes).expect("could not parse PE");
 
     // `dumprva <hexrva> [len]` — dump bytes at an RVA via pelite (correct addressing),
@@ -57,43 +57,43 @@ fn main() {
 
     println!("pattern: {}", pat_str);
     println!("mode:    {}", mode);
+    // Cap only the verbose per-match dump; keep counting every match so `total matches` and
+    // the uniqueness WARNING below are accurate even for a very non-unique pattern.
+    const MAX_DUMP: usize = 32;
     while matches.next(&mut addrs) {
         count += 1;
-        let cursor_rva = addrs[1];
-        print!("  match #{count}: match_rva=0x{:x} cursor_rva=0x{:x}", addrs[0], cursor_rva);
-        // Dump 24 bytes BEFORE and 48 bytes starting at the match, to aid re-derivation
-        // (function sigs often need the caller context that precedes the anchor).
-        if addrs[0] >= 24 {
-            if let Ok(pre) = pe.derva_slice::<u8>(addrs[0] - 24, 24) {
-                print!("\n    pre: {}", hex(pre));
+        if count == MAX_DUMP + 1 {
+            println!("  ... (further matches not dumped; still counting)");
+        }
+        if count <= MAX_DUMP {
+            let cursor_rva = addrs[1];
+            print!("  match #{count}: match_rva=0x{:x} cursor_rva=0x{:x}", addrs[0], cursor_rva);
+            // Dump 24 bytes BEFORE and 48 bytes starting at the match, to aid re-derivation
+            // (function sigs often need the caller context that precedes the anchor).
+            if addrs[0] >= 24 {
+                if let Ok(pre) = pe.derva_slice::<u8>(addrs[0] - 24, 24) {
+                    print!("\n    pre: {}", hex(pre));
+                }
             }
-        }
-        if let Ok(ctx) = pe.derva_slice::<u8>(addrs[0], 48) {
-            print!("\n    at:  {}", hex(ctx));
-        }
-        match mode {
-            "slice_u32" => {
-                match read_u32_at_rva(&pe, cursor_rva) {
+            if let Ok(ctx) = pe.derva_slice::<u8>(addrs[0], 48) {
+                print!("\n    at:  {}", hex(ctx));
+            }
+            match mode {
+                "slice_u32" => match read_u32_at_rva(&pe, cursor_rva) {
                     Some(v) => print!("  value(u32)=0x{v:x} ({v})"),
                     None => print!("  value(u32)=<unreadable>"),
-                }
-            }
-            "slice_u8" => {
-                match read_u8_at_rva(&pe, cursor_rva) {
+                },
+                "slice_u8" => match read_u8_at_rva(&pe, cursor_rva) {
                     Some(v) => print!("  value(u8)=0x{v:x} ({v})"),
                     None => print!("  value(u8)=<unreadable>"),
+                },
+                "addr" => {
+                    // For addr mode the cursor already holds the followed/resolved RVA.
+                    print!("  target_rva=0x{cursor_rva:x}");
                 }
+                other => print!("  <unknown mode {other}>"),
             }
-            "addr" => {
-                // For addr mode the cursor already holds the followed/resolved RVA.
-                print!("  target_rva=0x{cursor_rva:x}");
-            }
-            other => print!("  <unknown mode {other}>"),
-        }
-        println!();
-        if count > 32 {
-            println!("  ... (stopping after 32 matches)");
-            break;
+            println!();
         }
     }
 

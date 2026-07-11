@@ -64,6 +64,21 @@ impl OnLoadPlayerHook {
         let overmastery_offset = OVERMASTERY_OFFSET.load(std::sync::atomic::Ordering::Relaxed);
         let sigil_offset = SIGIL_OFFSET.load(std::sync::atomic::Ordering::Relaxed);
 
+        // If any offset failed to resolve (a game patch broke its signature; setup_globals
+        // now logs-and-continues instead of aborting, leaving the offset at its default 0),
+        // the struct pointers below would be computed at a1+0 and, worse, the sigil pointer
+        // would be read from *(a1+0) — the object's vtable pointer reinterpreted as a
+        // SigilList*, which is non-null and so passes the NonNull guard before being
+        // dereferenced. Bail rather than read/deref garbage on the game thread.
+        if player_offset == 0 || weapon_offset == 0 || overmastery_offset == 0 || sigil_offset == 0
+        {
+            log::warn!(
+                "player_load: skipping, unresolved offset(s) player_data={player_offset:#x} \
+                 weapon={weapon_offset:#x} overmastery={overmastery_offset:#x} sigil={sigil_offset:#x}"
+            );
+            return ret;
+        }
+
         let raw_player_stats = std::ptr::NonNull::new(
             unsafe { a1.byte_add(player_offset as usize) } as *mut PlayerStats,
         );
