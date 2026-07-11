@@ -184,6 +184,29 @@ pub struct PlayerIdentityEvent {
     pub is_online: bool,
 }
 
+/// Emitted when a Conflux (EndlessMode) run begins — the reception dispatcher
+/// builds an EndlessMode reception flow (quest_type 8). See src-hook endless.rs.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct ConfluxRunStartEvent {}
+
+/// Emitted on each Conflux room load while a run is active. `quest_id` is the
+/// room's quest identifier (each room is an isolated quest load).
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct ConfluxRoomEnterEvent {
+    pub quest_id: u32,
+}
+
+/// Emitted when a Conflux upgrade/buff installs on the player. `buff_id` is the
+/// raw ability/buff identifier; single-player, so no player attribution.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct ConfluxBuffAcquiredEvent {
+    pub buff_id: u32,
+}
+
+/// Emitted when a Conflux run concludes (EndlessModeQuestManager destroyed).
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct ConfluxRunEndEvent {}
+
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct AreaEnterEvent {
     /// Quest ID, last known. Could be stale if no other quest was ran while changing areas. 0 if no quest.
@@ -241,4 +264,10 @@ pub enum Message {
     /// Player name + actor mapping without version-sensitive equipment data.
     /// Used in 2.0 compatibility mode where the full player-load layout is unresolved.
     PlayerIdentityEvent(PlayerIdentityEvent),
+    /// Conflux (EndlessMode) run lifecycle. Run identity is assigned by the parser,
+    /// not the hook — these carry only the raw signal.
+    ConfluxRunStart(ConfluxRunStartEvent),
+    ConfluxRoomEnter(ConfluxRoomEnterEvent),
+    ConfluxBuffAcquired(ConfluxBuffAcquiredEvent),
+    ConfluxRunEnd(ConfluxRunEndEvent),
 }
