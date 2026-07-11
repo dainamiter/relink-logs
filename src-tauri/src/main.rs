@@ -281,6 +281,34 @@ fn fetch_logs(
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
+struct ConfluxSearchResult {
+    runs: Vec<db::runs::ConfluxRun>,
+    page: u32,
+    page_count: u32,
+    run_count: i32,
+}
+
+#[tauri::command]
+fn fetch_conflux_runs(page: Option<u32>) -> Result<ConfluxSearchResult, String> {
+    let conn = db::connect_to_db().map_err(|e| e.to_string())?;
+    let page = page.unwrap_or(1);
+    let per_page = 10u32;
+    let offset = page.saturating_sub(1) * per_page;
+
+    let runs = db::runs::get_runs(&conn, per_page, offset).map_err(|e| e.to_string())?;
+    let run_count = db::runs::get_runs_count(&conn).map_err(|e| e.to_string())?;
+    let page_count = (run_count as f64 / per_page as f64).ceil() as u32;
+
+    Ok(ConfluxSearchResult {
+        runs,
+        page,
+        page_count,
+        run_count,
+    })
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 struct EncounterStateResponse {
     encounter_state: v1::DerivedEncounterState,
     players: [Option<PlayerData>; 4],
@@ -503,6 +531,18 @@ fn connect_and_run_parser(app: AppHandle) {
                                 protocol::Message::OnDeathEvent(event) => {
                                     state.on_death_event(event);
                                 }
+                                protocol::Message::ConfluxRunStart(_) => {
+                                    state.on_conflux_run_start();
+                                }
+                                protocol::Message::ConfluxRoomEnter(event) => {
+                                    state.on_conflux_room_enter(event);
+                                }
+                                protocol::Message::ConfluxBuffAcquired(event) => {
+                                    state.on_conflux_buff_acquired(event);
+                                }
+                                protocol::Message::ConfluxRunEnd(_) => {
+                                    state.on_conflux_run_end();
+                                }
                             }
                         }
                     }
@@ -684,6 +724,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             fetch_encounter_state,
             fetch_logs,
+            fetch_conflux_runs,
             delete_logs,
             delete_all_logs,
             toggle_always_on_top,
