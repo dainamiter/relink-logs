@@ -178,6 +178,17 @@ impl OnProcessDamageHook {
         let source_type_id = actor_type_id(source_specified_instance_ptr as *const usize);
         let source_idx = actor_idx(source_specified_instance_ptr as *const usize);
 
+        // Game 2.0.2: resolve this actor to a cached player identity (name + party
+        // slot) and publish it, since the full player_load hook no longer fires.
+        // Returns None for enemies/NPCs and players not yet cached — cheap no-op then.
+        if let Some(identity) = super::player::identity_event_for_actor(
+            source_specified_instance_ptr as *const usize,
+            source_type_id,
+            source_idx,
+        ) {
+            let _ = self.tx.send(Message::PlayerIdentityEvent(identity));
+        }
+
         // If the source_type is any of the following, then we need to get their parent entity.
         let (source_parent_type_id, source_parent_idx) = get_source_parent(
             source_type_id,

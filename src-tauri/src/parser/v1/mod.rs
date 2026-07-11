@@ -4,7 +4,7 @@ use anyhow::Result;
 use chrono::Utc;
 use protocol::{
     AreaEnterEvent, DamageEvent, Message, OnAttemptSBAEvent, OnContinueSBAChainEvent, OnDeathEvent,
-    OnPerformSBAEvent, OnUpdateSBAEvent, PlayerLoadEvent, QuestCompleteEvent,
+    OnPerformSBAEvent, OnUpdateSBAEvent, PlayerIdentityEvent, PlayerLoadEvent, QuestCompleteEvent,
 };
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
@@ -760,15 +760,61 @@ impl Parser {
             player_stats: Some(event.player_stats.into()),
         };
 
+        self.insert_player_data(player_data, event.party_index);
+    }
+
+    /// Handles the game 2.0.2 identity-only event: name + party slot, without the
+    /// equipment/stats the full player_load carries. Merges into any existing slot
+    /// for this actor (preserving equipment if it was ever populated) or creates a
+    /// new identity-only entry, so same-character players stay distinct and online
+    /// players show their real name instead of `[Guest]`.
+    pub fn on_player_identity_event(&mut self, event: PlayerIdentityEvent) {
+        let character_type = CharacterType::from_hash(event.character_type);
+
+        // Ignore Id's transformation (same guard as the full player_load path).
+        if character_type == CharacterType::Pl2000 {
+            return;
+        }
+
+        let mut player_data = self
+            .encounter
+            .player_data
+            .iter()
+            .flatten()
+            .find(|player| player.actor_index == event.actor_index)
+            .cloned()
+            .unwrap_or(PlayerData {
+                actor_index: event.actor_index,
+                display_name: String::new(),
+                character_name: String::new(),
+                character_type,
+                sigils: Vec::new(),
+                is_online: event.is_online,
+                weapon_info: None,
+                overmastery_info: None,
+                player_stats: None,
+            });
+
+        player_data.display_name = event.display_name.to_string_lossy().to_string();
+        player_data.character_name = event.character_name.to_string_lossy().to_string();
+        player_data.character_type = character_type;
+        player_data.is_online = event.is_online;
+
+        self.insert_player_data(player_data, event.party_index);
+    }
+
+    /// Inserts or updates a player in the encounter's 4-slot array, keyed by
+    /// actor_index. Shared by the full player_load path and the identity-only path.
+    fn insert_player_data(&mut self, player_data: PlayerData, party_index: u8) {
         // Insert into encounter player data array, using actor_index.
-        if !player_data.is_online && event.party_index == 0 {
-            self.encounter.player_data[0] = Some(player_data.clone());
+        if !player_data.is_online && party_index == 0 {
+            self.encounter.player_data[0] = Some(player_data);
         } else {
             for i in 1..=3 {
                 if let Some(player) = &self.encounter.player_data[i] {
                     // If this is the same player, update it.
                     if player.actor_index == player_data.actor_index {
-                        self.encounter.player_data[i] = Some(player_data.clone());
+                        self.encounter.player_data[i] = Some(player_data);
                         break;
                     }
 
@@ -776,11 +822,11 @@ impl Parser {
                     // then we need to shift the rest of the array to the right.
                     if player_data.actor_index < player.actor_index {
                         self.encounter.player_data[i..].rotate_right(1);
-                        self.encounter.player_data[i] = Some(player_data.clone());
+                        self.encounter.player_data[i] = Some(player_data);
                         break;
                     }
                 } else {
-                    self.encounter.player_data[i] = Some(player_data.clone());
+                    self.encounter.player_data[i] = Some(player_data);
                     break;
                 }
             }

@@ -166,6 +166,24 @@ pub struct PlayerLoadEvent {
     pub player_stats: PlayerStats,
 }
 
+/// Minimal player metadata resolved from the identity snapshot alone.
+///
+/// The full [`PlayerLoadEvent`] reads sigils, weapon, overmastery and stats from
+/// equipment layouts that shifted in the 2.0 update and are not yet re-derived.
+/// This event carries only the always-available identity fields (name, party
+/// slot, online flag) so the meter can distinguish players — in particular two
+/// players on the same character, and online players that would otherwise show
+/// as `[Guest]` — without manufacturing empty equipment data.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct PlayerIdentityEvent {
+    pub character_name: CString,
+    pub display_name: CString,
+    pub character_type: u32,
+    pub party_index: u8,
+    pub actor_index: u32,
+    pub is_online: bool,
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct AreaEnterEvent {
     /// Quest ID, last known. Could be stale if no other quest was ran while changing areas. 0 if no quest.
@@ -220,4 +238,7 @@ pub enum Message {
     OnContinueSBAChain(OnContinueSBAChainEvent),
     PlayerLoadEvent(PlayerLoadEvent),
     OnDeathEvent(OnDeathEvent),
+    /// Player name + actor mapping without version-sensitive equipment data.
+    /// Used in 2.0 compatibility mode where the full player-load layout is unresolved.
+    PlayerIdentityEvent(PlayerIdentityEvent),
 }

@@ -138,6 +138,16 @@ impl Process {
         Ok(self.first_match(signature_pattern)?[0] as usize)
     }
 
+    /// Searches and returns the absolute address where the signature itself begins to
+    /// match (`addrs[0]`, the match start).
+    ///
+    /// Unlike [`search_address`](Self::search_address), which follows a captured `call`
+    /// target, this is for signatures that match a function's prologue directly — the
+    /// match start *is* the entry to detour. Use it when the sig has no `$`/`'` capture.
+    pub fn search_match_address(&self, signature_pattern: &str) -> anyhow::Result<usize> {
+        Ok(self.base_address + self.first_match(signature_pattern)?[0] as usize)
+    }
+
     /// Searches and returns the value of the type `T` that matches the given signature pattern.
     pub fn search_slice<T>(&self, signature_pattern: &str) -> anyhow::Result<T> {
         let addrs = self.first_match(signature_pattern)?;

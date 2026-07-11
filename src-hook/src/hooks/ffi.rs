@@ -175,4 +175,28 @@ impl VBuffer {
 
         unsafe { CString::from_vec_unchecked(bytes.to_vec()) }
     }
+
+    /// Bounds-checked read for use on snapshots that come straight from game
+    /// memory (e.g. the 2.0.2 identity path), where a wrong offset could otherwise
+    /// hand `raw()` a garbage length/pointer. Rejects implausible sizes and any
+    /// non-UTF-8 / interior-NUL content, returning `None` instead of reading junk.
+    pub fn checked_raw(&self) -> Option<CString> {
+        const MAX_PLAYER_NAME_BYTES: usize = 0x100;
+
+        let used_size = self.used_size();
+        let max_size = self.max_size();
+
+        if used_size > MAX_PLAYER_NAME_BYTES || max_size < used_size || max_size > 0x1000 {
+            return None;
+        }
+
+        let bytes_ptr = self.ptr() as *const u8;
+        if bytes_ptr.is_null() {
+            return None;
+        }
+
+        let bytes = unsafe { std::slice::from_raw_parts(bytes_ptr, used_size) };
+        std::str::from_utf8(bytes).ok()?;
+        CString::new(bytes).ok()
+    }
 }

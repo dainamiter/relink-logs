@@ -154,6 +154,168 @@ fn readable(addr: usize, len: usize) -> bool {
     }
 }
 
+/// Read a single `u32` at `base + offset`, returning 0 if `base` is null or the location
+/// isn't committed/readable. VirtualQuery-guarded, so it can NEVER fault the game — safe to
+/// point at a possibly-stale pointer (e.g. the reception-flow slot, which may be null between
+/// runs). Used by the EndlessMode reception hook to read a flow object's type-hash stamp.
+#[cfg(feature = "hookdiag")]
+pub fn read_u32_guarded(base: usize, offset: usize) -> u32 {
+    if base == 0 {
+        return 0;
+    }
+    let addr = base.wrapping_add(offset);
+    if !readable(addr, 4) {
+        return 0;
+    }
+    unsafe { (addr as *const u32).read_unaligned() }
+}
+
+/// Dump every nonzero `u32` in the window `[base, base+len)` as `+off=val` (hex offset,
+/// decimal value), for re-deriving struct field offsets from a live playthrough. Used for
+/// the Conflux/EndlessMode work (see hooks/endless.rs, quest.rs): walking room→room, the
+/// field that increments is the room/run counter; the buff component's populated slots are
+/// the picked abilities. Which offset means what is decoded from how the value CHANGES
+/// across the log, so we dump the raw window and let the playthrough reveal the layout.
+///
+/// Rate-limited to a handful of DISTINCT base addresses so the log stays readable when a
+/// hook fires repeatedly on the same object. EVERY read is VirtualQuery-guarded (per 4-byte
+/// slot) so it can NEVER fault the game, even if `base`/`len` describe unmapped memory.
+///
+/// The one-shot counterpart of [`probe_u32_window_delta`]: use this when you want ONE full
+/// snapshot per distinct object (a freshly-created struct whose layout you're mapping), and
+/// the delta variant when the same object mutates over time and you want the changes. Kept
+/// as a ready helper even when call sites currently prefer the delta form.
+#[cfg(feature = "hookdiag")]
+#[allow(dead_code)]
+pub fn probe_u32_window(label: &str, base: usize, len: usize) {
+    use std::sync::Mutex;
+    // Dedup by base so repeated hits on the same instance don't re-dump; cap total distinct
+    // dumps so an unbounded stream of new instances can't flood the log.
+    static SEEN: Mutex<Vec<usize>> = Mutex::new(Vec::new());
+    const MAX_DISTINCT: usize = 64;
+    if base == 0 {
+        return;
+    }
+    {
+        let mut seen = SEEN.lock().unwrap();
+        if seen.contains(&base) {
+            return;
+        }
+        if seen.len() >= MAX_DISTINCT {
+            return;
+        }
+        seen.push(base);
+    }
+
+    let mut out = String::new();
+    let mut off = 0usize;
+    while off + 4 <= len {
+        let addr = base + off;
+        if readable(addr, 4) {
+            let v = unsafe { (addr as *const u32).read_unaligned() };
+            if v != 0 {
+                out.push_str(&format!("+{off:#x}={v} "));
+            }
+        }
+        off += 4;
+    }
+    log::info!(
+        "HOOKDIAG t={} probe[{label}] base={base:#x} len={len:#x} u32s: {}",
+        ms(),
+        if out.is_empty() { "(all zero/unreadable)".into() } else { out }
+    );
+}
+
+/// Like `probe_u32_window`, but re-dumps the SAME object across repeated hits, logging only
+/// the offsets whose value CHANGED since the previous visit (`+off:old->new`). This is what
+/// `probe_u32_window` (dedup-by-address, one-shot) cannot do: on a long-lived object — e.g.
+/// the EndlessModeQuestManager or the stage-quest manager that `on_load_quest_state` receives
+/// every room — the room/run counter is a field that INCREMENTS in place, so the signal is
+/// the delta, not the absolute snapshot. First visit logs the full nonzero snapshot (tagged
+/// `first`); later visits log only diffs (tagged `delta`). Snapshots are keyed by (label,base)
+/// so different probe sites don't clobber each other; capped so an unbounded stream of new
+/// bases can't grow memory without bound. Every read is VirtualQuery-guarded (can't fault).
+#[cfg(feature = "hookdiag")]
+pub fn probe_u32_window_delta(label: &str, base: usize, len: usize) {
+    use std::collections::HashMap;
+    use std::sync::Mutex;
+    // (label,base) -> last-seen offset->value map. Only nonzero (or previously-seen) offsets
+    // are tracked, matching the snapshot format.
+    static SNAPS: Mutex<Option<HashMap<(String, usize), HashMap<usize, u32>>>> = Mutex::new(None);
+    const MAX_KEYS: usize = 128;
+    if base == 0 {
+        return;
+    }
+
+    // Read the current window into a fresh map (guarded per slot).
+    let mut cur: std::collections::HashMap<usize, u32> = std::collections::HashMap::new();
+    let mut off = 0usize;
+    while off + 4 <= len {
+        let addr = base + off;
+        if readable(addr, 4) {
+            let v = unsafe { (addr as *const u32).read_unaligned() };
+            if v != 0 {
+                cur.insert(off, v);
+            }
+        }
+        off += 4;
+    }
+
+    let mut guard = SNAPS.lock().unwrap();
+    let map = guard.get_or_insert_with(HashMap::new);
+    let key = (label.to_string(), base);
+
+    match map.get(&key) {
+        None => {
+            if map.len() >= MAX_KEYS {
+                return;
+            }
+            // First visit: full snapshot.
+            let mut out = String::new();
+            let mut offs: Vec<usize> = cur.keys().copied().collect();
+            offs.sort_unstable();
+            for o in offs {
+                out.push_str(&format!("+{o:#x}={} ", cur[&o]));
+            }
+            log::info!(
+                "HOOKDIAG t={} probe_delta[{label}] base={base:#x} first: {}",
+                ms(),
+                if out.is_empty() { "(all zero/unreadable)".into() } else { out }
+            );
+            map.insert(key, cur);
+        }
+        Some(prev) => {
+            // Later visit: log only changed offsets (including new nonzero and cleared-to-zero).
+            let mut out = String::new();
+            let mut changed: Vec<usize> = Vec::new();
+            for (&o, &v) in cur.iter() {
+                if prev.get(&o) != Some(&v) {
+                    changed.push(o);
+                }
+            }
+            // Offsets that were nonzero before and are now zero/gone.
+            for &o in prev.keys() {
+                if !cur.contains_key(&o) {
+                    changed.push(o);
+                }
+            }
+            changed.sort_unstable();
+            changed.dedup();
+            for o in &changed {
+                let old = prev.get(o).copied().unwrap_or(0);
+                let new = cur.get(o).copied().unwrap_or(0);
+                out.push_str(&format!("+{o:#x}:{old}->{new} "));
+            }
+            log::info!(
+                "HOOKDIAG t={} probe_delta[{label}] base={base:#x} delta: {}",
+                ms(),
+                if out.is_empty() { "(no change)".into() } else { out }
+            );
+            map.insert(key, cur);
+        }
+    }
+}
+
 /// Scan a player-instance pointer for the display/character name and party data that
 /// `player_load` used to publish. `player_load` reached these via a pointer field to a
 /// SigilList (name at +0x1E8/+0x208, party_index at +0x22C, is_online at +0x1C8), so we:
@@ -302,6 +464,20 @@ pub fn set_module_base(_base: usize) {}
 #[inline(always)]
 #[allow(dead_code)]
 pub fn log_addr(_label: &str, _addr: usize) {}
+#[cfg(not(feature = "hookdiag"))]
+#[inline(always)]
+#[allow(dead_code)]
+pub fn probe_u32_window(_label: &str, _base: usize, _len: usize) {}
+#[cfg(not(feature = "hookdiag"))]
+#[inline(always)]
+#[allow(dead_code)]
+pub fn probe_u32_window_delta(_label: &str, _base: usize, _len: usize) {}
+#[cfg(not(feature = "hookdiag"))]
+#[inline(always)]
+#[allow(dead_code)]
+pub fn read_u32_guarded(_base: usize, _offset: usize) -> u32 {
+    0
+}
 #[cfg(not(feature = "hookdiag"))]
 #[inline(always)]
 #[allow(dead_code)] // now only called under `hookdiag`; shim kept for symmetry

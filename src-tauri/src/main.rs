@@ -482,6 +482,9 @@ fn connect_and_run_parser(app: AppHandle) {
                                 protocol::Message::PlayerLoadEvent(event) => {
                                     state.on_player_load_event(event);
                                 }
+                                protocol::Message::PlayerIdentityEvent(event) => {
+                                    state.on_player_identity_event(event);
+                                }
                                 protocol::Message::OnQuestComplete(event) => {
                                     state.on_quest_complete_event(event);
                                 }

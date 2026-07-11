@@ -6,7 +6,8 @@ use crate::{event, process::Process};
 use self::{
     area::OnAreaEnterHook,
     damage::{OnProcessDamageHook, OnProcessDotHook},
-    player::OnLoadPlayerHook,
+    endless::{OnEndlessBuffInstallHook, OnEndlessMgrDtorHook, OnReceptionFlowDispatchHook},
+    player::{OnLoadPlayerHook, OnLoadPlayerIdentityHook},
     quest::{OnLoadQuestHook, OnQuestCompleteHook},
     sba::{
         OnAttemptSBAHook, OnCheckSBACollisionHook, OnContinueSBAChainHook, OnHandleSBAUpdateHook,
@@ -18,6 +19,7 @@ mod area;
 mod damage;
 mod death;
 pub mod diag;
+mod endless;
 mod ffi;
 mod globals;
 mod loadprobe;
@@ -69,6 +71,16 @@ pub fn setup_hooks(tx: event::Tx) -> Result<()> {
     /* Player Data */
     try_step("player_load", OnLoadPlayerHook::new(tx.clone()).setup(&process));
 
+    // Game 2.0.2 identity path: the full player_load layout (sigil/weapon/overmastery
+    // offsets) is not yet re-derived, so player_load above no longer fires. This hook
+    // reads only the stable identity snapshot (name + party slot) and, together with
+    // the damage hook's identity_event_for_actor lookup, is what distinguishes players
+    // and fixes [Guest] names + same-character collapse. See hooks/player.rs.
+    try_step(
+        "player_identity",
+        OnLoadPlayerIdentityHook::new(tx.clone()).setup(&process),
+    );
+
     // hookdiag-only: probe to re-derive the broken player_load address from a live stage
     // load (see loadprobe.rs). No-op without the feature.
     try_step(
@@ -80,6 +92,21 @@ pub fn setup_hooks(tx: event::Tx) -> Result<()> {
     try_step("area_enter", OnAreaEnterHook::new(tx.clone()).setup(&process));
     try_step("quest_load_state", OnLoadQuestHook::new().setup(&process));
     try_step("quest_complete", OnQuestCompleteHook::new(tx.clone()).setup(&process));
+
+    /* Conflux / EndlessMode — hookdiag-only diagnostics (no-op setup without the feature).
+    Captures a live run so the room/run/ability layout can be decoded from the log. */
+    try_step(
+        "endless_reception",
+        OnReceptionFlowDispatchHook::new().setup(&process),
+    );
+    try_step(
+        "endless_buff_install",
+        OnEndlessBuffInstallHook::new().setup(&process),
+    );
+    try_step(
+        "endless_run_end",
+        OnEndlessMgrDtorHook::new().setup(&process),
+    );
 
     /* SBA */
     try_step("sba_update", OnHandleSBAUpdateHook::new(tx.clone()).setup(&process));

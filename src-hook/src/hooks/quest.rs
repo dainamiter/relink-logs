@@ -83,6 +83,26 @@ impl OnLoadQuestHook {
 
         QUEST_STATE_PTR.store(quest_state_ptr, std::sync::atomic::Ordering::Relaxed);
 
+        // Conflux/EndlessMode instrumentation (hookdiag-only). `a1` is the stage-quest
+        // manager: QuestState lives at +0x1D8 and the reception-flow singleton slot at
+        // +0x210 (see FUN_140638690 / hooks/endless.rs). Each Conflux ROOM is an isolated
+        // quest load, so this fires once per room; the reception-flow pointer tells us
+        // whether we're inside an EndlessMode run, and the wide u32 scan lets a playthrough
+        // reveal which field is the room/run counter (whatever increments room→room).
+        #[cfg(feature = "hookdiag")]
+        {
+            let quest_id = unsafe { (*quest_state_ptr).quest_id };
+            let reception_flow = unsafe { a1.byte_add(0x210).read() };
+            crate::hooks::diag::ev!(
+                "endless_quest_load",
+                "quest_id={quest_id:#x} reception_flow={reception_flow:#x}"
+            );
+            // `a1` (the stage-quest manager) persists across rooms, so the room/run counter is
+            // a field that increments in place — use the delta probe so each room load logs
+            // exactly what CHANGED since the previous room, not a full snapshot every time.
+            crate::hooks::diag::probe_u32_window_delta("quest_load", a1 as usize, 0x400);
+        }
+
         ret
     }
 }
