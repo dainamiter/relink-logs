@@ -90,22 +90,23 @@ pub fn setup_hooks(tx: event::Tx) -> Result<()> {
 
     /* Quest + Area Tracking */
     try_step("area_enter", OnAreaEnterHook::new(tx.clone()).setup(&process));
-    try_step("quest_load_state", OnLoadQuestHook::new().setup(&process));
+    try_step("quest_load_state", OnLoadQuestHook::new(tx.clone()).setup(&process));
     try_step("quest_complete", OnQuestCompleteHook::new(tx.clone()).setup(&process));
 
-    /* Conflux / EndlessMode — hookdiag-only diagnostics (no-op setup without the feature).
-    Captures a live run so the room/run/ability layout can be decoded from the log. */
+    /* Conflux / EndlessMode — emits run-start / buff / run-end messages so the parser can
+    group a run's rooms + buffs (room-enter itself comes from quest_load_state above). The
+    hookdiag field-window probes inside each hook stay available for future offset work. */
     try_step(
         "endless_reception",
-        OnReceptionFlowDispatchHook::new().setup(&process),
+        OnReceptionFlowDispatchHook::new(tx.clone()).setup(&process),
     );
     try_step(
         "endless_buff_install",
-        OnEndlessBuffInstallHook::new().setup(&process),
+        OnEndlessBuffInstallHook::new(tx.clone()).setup(&process),
     );
     try_step(
         "endless_run_end",
-        OnEndlessMgrDtorHook::new().setup(&process),
+        OnEndlessMgrDtorHook::new(tx.clone()).setup(&process),
     );
 
     /* SBA */

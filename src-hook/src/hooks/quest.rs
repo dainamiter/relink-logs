@@ -44,11 +44,13 @@ const RESULT_TYPE_QUEST_COMPLETE: u32 = 5;
 
 /// Called while loading into a quest.
 #[derive(Clone)]
-pub struct OnLoadQuestHook {}
+pub struct OnLoadQuestHook {
+    tx: event::Tx,
+}
 
 impl OnLoadQuestHook {
-    pub fn new() -> Self {
-        OnLoadQuestHook {}
+    pub fn new(tx: event::Tx) -> Self {
+        OnLoadQuestHook { tx }
     }
 
     pub fn setup(&self, process: &Process) -> Result<()> {
@@ -82,6 +84,19 @@ impl OnLoadQuestHook {
         }
 
         QUEST_STATE_PTR.store(quest_state_ptr, std::sync::atomic::Ordering::Relaxed);
+
+        // Conflux room boundary: if this quest load happens while an EndlessMode reception
+        // flow is active, it's a ROOM enter. The reception-flow slot lives at manager+0x210;
+        // its type-hash at flow+0x7c8 identifies EndlessMode. Emitting per-room lets the
+        // parser cut off + save the previous room and group rooms under the run.
+        let reception_flow = unsafe { a1.byte_add(0x210).read() };
+        let flow_type = crate::hooks::diag::read_u32_guarded(reception_flow, 0x7c8);
+        if flow_type == 0x887ae0b0 {
+            let quest_id = unsafe { (*quest_state_ptr).quest_id };
+            let _ = self.tx.send(Message::ConfluxRoomEnter(
+                protocol::ConfluxRoomEnterEvent { quest_id },
+            ));
+        }
 
         // Conflux/EndlessMode instrumentation (hookdiag-only). `a1` is the stage-quest
         // manager: QuestState lives at +0x1D8 and the reception-flow singleton slot at

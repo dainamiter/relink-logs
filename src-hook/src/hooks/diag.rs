@@ -120,7 +120,11 @@ pub fn log_callers_depth(label: &str, max: usize) {
 /// Returns true only if `[addr, addr+len)` is committed, readable memory (guards every deref
 /// so the probe can NEVER fault the game). Uses VirtualQuery — a bad "plausible pointer" that
 /// points at unmapped/guard memory is rejected before we touch it.
-#[cfg(feature = "hookdiag")]
+///
+/// Compiled in all builds: the real Conflux emitters (endless.rs / quest.rs) use
+/// `read_u32_guarded` at runtime to read the reception-flow type-hash and buff ids,
+/// so this guard must exist without `hookdiag`.
+#[allow(dead_code)] // only reached via read_u32_guarded, which some builds don't call
 fn readable(addr: usize, len: usize) -> bool {
     use windows::Win32::System::Memory::{
         VirtualQuery, MEMORY_BASIC_INFORMATION, MEM_COMMIT, PAGE_GUARD, PAGE_NOACCESS,
@@ -158,7 +162,6 @@ fn readable(addr: usize, len: usize) -> bool {
 /// isn't committed/readable. VirtualQuery-guarded, so it can NEVER fault the game — safe to
 /// point at a possibly-stale pointer (e.g. the reception-flow slot, which may be null between
 /// runs). Used by the EndlessMode reception hook to read a flow object's type-hash stamp.
-#[cfg(feature = "hookdiag")]
 pub fn read_u32_guarded(base: usize, offset: usize) -> u32 {
     if base == 0 {
         return 0;
@@ -472,12 +475,6 @@ pub fn probe_u32_window(_label: &str, _base: usize, _len: usize) {}
 #[inline(always)]
 #[allow(dead_code)]
 pub fn probe_u32_window_delta(_label: &str, _base: usize, _len: usize) {}
-#[cfg(not(feature = "hookdiag"))]
-#[inline(always)]
-#[allow(dead_code)]
-pub fn read_u32_guarded(_base: usize, _offset: usize) -> u32 {
-    0
-}
 #[cfg(not(feature = "hookdiag"))]
 #[inline(always)]
 #[allow(dead_code)] // now only called under `hookdiag`; shim kept for symmetry
