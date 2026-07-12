@@ -10,6 +10,8 @@ use std::{
 };
 
 use anyhow::Context;
+use gbfr_logs::{db, parser};
+
 use db::logs::LogEntry;
 use dll_syringe::{process::OwnedProcess, Syringe};
 use interprocess::os::windows::named_pipe::tokio::RecvPipeStream;
@@ -29,9 +31,6 @@ use tauri_plugin_log::LogTarget;
 use tauri_plugin_window_state::{AppHandleExt, StateFlags};
 use tokio_stream::StreamExt;
 use tokio_util::codec::FramedRead;
-
-mod db;
-mod parser;
 
 struct AlwaysOnTop(AtomicBool);
 struct ClickThrough(AtomicBool);
