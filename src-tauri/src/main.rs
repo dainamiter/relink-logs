@@ -204,7 +204,7 @@ fn fetch_logs(
     let mut player_types = Vec::new();
 
     let mut query = conn
-        .prepare("SELECT primary_target, quest_id, p1_name, p1_type, p2_name, p2_type, p3_name, p3_type, p4_name, p4_type from logs")
+        .prepare("SELECT primary_target, quest_id, p1_name, p1_type, p2_name, p2_type, p3_name, p3_type, p4_name, p4_type from logs WHERE run_id IS NULL")
         .map_err(|e| e.to_string())?;
 
     let rows = query
@@ -315,6 +315,9 @@ struct EncounterStateResponse {
     quest_id: Option<u32>,
     quest_timer: Option<u32>,
     quest_completed: bool,
+    /// 0-based room index when this log is a Conflux room, else None. Lets the
+    /// detail view suppress quest-status/elapsed-time (meaningless for a room).
+    room_index: Option<u32>,
     targets: Vec<EnemyType>,
     dps_chart: HashMap<u32, Vec<i32>>,
     sba_chart: HashMap<u32, Vec<f32>>,
@@ -333,11 +336,11 @@ struct ParseOptions {
 fn fetch_encounter_state(id: u64, options: ParseOptions) -> Result<EncounterStateResponse, String> {
     let conn = db::connect_to_db().map_err(|e| e.to_string())?;
     let mut stmt = conn
-        .prepare("SELECT data, version FROM logs WHERE id = ?")
+        .prepare("SELECT data, version, room_index FROM logs WHERE id = ?")
         .map_err(|e| e.to_string())?;
 
-    let (blob, version): (Vec<u8>, u8) = stmt
-        .query_row([id], |row| Ok((row.get(0)?, row.get(1)?)))
+    let (blob, version, room_index): (Vec<u8>, u8, Option<u32>) = stmt
+        .query_row([id], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
         .map_err(|e| e.to_string())?;
 
     // @TODO(false): If we deserialize from an older version, we should save it back into the DB as the newer format.
@@ -412,6 +415,7 @@ fn fetch_encounter_state(id: u64, options: ParseOptions) -> Result<EncounterStat
         quest_id: parser.encounter.quest_id,
         quest_timer: parser.encounter.quest_timer,
         quest_completed: parser.encounter.quest_completed,
+        room_index,
         dps_chart: player_dps,
         chart_len: (duration / DPS_INTERVAL) as usize + 1,
         sba_chart_len: (duration / SBA_INTERVAL) as usize + 1,

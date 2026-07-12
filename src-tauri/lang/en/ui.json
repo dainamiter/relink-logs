@@ -92,6 +92,7 @@
       "delete-selected-logs-confirmation_one": "This will delete {{count}} log from the database. This action cannot be undone.",
       "delete-selected-logs-confirmation_other": "This will delete {{count}} logs from the database. This action cannot be undone.",
       "quest-name": "Quest",
+      "conflux-room": "Conflux Room",
       "quest-elapsed-time": "IGT",
       "sba-chart": "Skybound Arts Gauge",
       "quest-status": "Status",
@@ -124,6 +125,12 @@
     "Pl2100": "Sandalphon",
     "Pl2200": "Seofon",
     "Pl2300": "Tweyen",
+    "Pl2400": "Gallanza",
+    "Pl2500": "Maglielle",
+    "Pl2600": "Beatrix",
+    "Pl2700": "Eustace",
+    "Pl2800": "Fraux",
+    "Pl2900": "Fediel",
     "Unknown": "Unknown"
   },
   "skills": {

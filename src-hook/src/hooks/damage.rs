@@ -71,25 +71,42 @@ impl OnProcessDamageHook {
 
         // Target is the instance of the actor being damaged.
         // For example: Instance of the Em2700 class.
-        let target_specified_instance_ptr: usize = unsafe { *(*a1.byte_add(0x08) as *const usize) };
+        //
+        // All of these actor derefs are VirtualQuery-guarded (read_ptr/f32_guarded): a NEW
+        // character can be a `Pl####` class with a different instance layout, so an offset
+        // valid for known actors may fall outside its allocation. A guarded read returns None
+        // there and we bail — the game's own damage processing STILL runs (we never skip
+        // ProcessDamageEvent.call), we only skip emitting our own event. Previously these were
+        // raw derefs that hard-faulted the game thread on an unfamiliar actor (silent freeze).
+        use crate::hooks::diag::{read_f32_guarded, read_ptr_guarded};
 
-        let previous_stun_value = unsafe {
-            (target_specified_instance_ptr as *const f32)
-                .byte_add(0xA70)
-                .read()
+        // a1+0x08 -> *ptr -> target specified instance. Two hops, each guarded.
+        let target_specified_instance_ptr = match read_ptr_guarded(a1 as usize, 0x08)
+            .and_then(|p| read_ptr_guarded(p, 0x00))
+        {
+            Some(ptr) if ptr != 0 => ptr,
+            _ => return unsafe { ProcessDamageEvent.call(a1, a2, a3, a4) },
         };
+
+        let previous_stun_value = read_f32_guarded(target_specified_instance_ptr, 0xA70);
 
         let original_value = unsafe { ProcessDamageEvent.call(a1, a2, a3, a4) };
 
-        let current_stun_value = unsafe {
-            (target_specified_instance_ptr as *const f32)
-                .byte_add(0xA70)
-                .read()
+        // Stun is a delta across the original call; if either read is unavailable we simply
+        // report no stun rather than faulting.
+        let added_stun_value = match (
+            previous_stun_value,
+            read_f32_guarded(target_specified_instance_ptr, 0xA70),
+        ) {
+            (Some(prev), Some(cur)) => (cur - prev).max(0.0),
+            _ => 0.0,
         };
-        let added_stun_value = (current_stun_value - previous_stun_value).max(0.0);
 
         // This points to the first Entity instance in the 'a2' entity list.
-        let source_entity_ptr = unsafe { (a2.byte_add(0x18) as *const *const usize).read() };
+        let source_entity_ptr = match read_ptr_guarded(a2 as usize, 0x18) {
+            Some(ptr) => ptr as *const usize,
+            None => return original_value,
+        };
 
         // @TODO(false): For some reason, online + Ferry's Umlauf skill pet can return a null pointer here.
         // Possible data race with online?
@@ -99,7 +116,11 @@ impl OnProcessDamageHook {
 
         // entity->m_pSpecifiedInstance, offset 0x70 from entity pointer.
         // Returns the specific class instance of the source entity. (e.g. Instance of Pl1200 / Pl0700Ghost)
-        let source_specified_instance_ptr: usize = unsafe { *(source_entity_ptr.byte_add(0x70)) };
+        let source_specified_instance_ptr = match read_ptr_guarded(source_entity_ptr as usize, 0x70)
+        {
+            Some(ptr) if ptr != 0 => ptr,
+            _ => return original_value,
+        };
 
         // hookdiag: DISABLED — the wide instance scan was too heavy for the game thread and
         // froze the game. We already captured the structure (see memory). Left here (commented)

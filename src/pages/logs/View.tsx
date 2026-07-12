@@ -183,6 +183,7 @@ export const ViewPage = () => {
     questId,
     questTimer,
     questCompleted,
+    roomIndex,
     playerData,
     setSelectedTargets,
     loadFromResponse,
@@ -199,6 +200,7 @@ export const ViewPage = () => {
     questId: state.questId,
     questTimer: state.questTimer,
     questCompleted: state.questCompleted,
+    roomIndex: state.roomIndex,
     setSelectedTargets: state.setSelectedTargets,
     loadFromResponse: state.loadFromResponse,
   }));
@@ -392,7 +394,17 @@ export const ViewPage = () => {
 
       <Box id="log-view-page">
         <Box>
-          {questId && (
+          {roomIndex !== null && (
+            <Box display="flex">
+              <Text size="sm" fw={800}>
+                {t("ui.logs.conflux-room", "Conflux Room")}:
+              </Text>
+              <Text size="sm" ml={4}>
+                #{roomIndex + 1}
+              </Text>
+            </Box>
+          )}
+          {questId && roomIndex === null && (
             <Box display="flex">
               <Text size="sm" fw={800}>
                 {t("ui.logs.quest-name")}:
@@ -402,7 +414,7 @@ export const ViewPage = () => {
               </Text>
             </Box>
           )}
-          {questId && (
+          {questId && roomIndex === null && (
             <Box display="flex">
               <Text size="sm" fw={800}>
                 {t("ui.logs.quest-status")}:
@@ -428,7 +440,7 @@ export const ViewPage = () => {
               {millisecondsToElapsedFormat(encounter.endTime - encounter.startTime)}
             </Text>
           </Box>
-          {questTimer && (
+          {questTimer && roomIndex === null && (
             <Box display="flex">
               <Text size="sm" fw={800}>
                 {t("ui.logs.quest-elapsed-time")}:

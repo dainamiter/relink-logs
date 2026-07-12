@@ -173,6 +173,39 @@ pub fn read_u32_guarded(base: usize, offset: usize) -> u32 {
     unsafe { (addr as *const u32).read_unaligned() }
 }
 
+/// Read a pointer-sized value at `base + offset`, returning `None` if `base` is null or the
+/// location isn't committed/readable. VirtualQuery-guarded — can NEVER fault the game.
+///
+/// Unlike [`read_u32_guarded`] this distinguishes "unreadable" (`None`) from a legitimately
+/// zero value (`Some(0)`), which the damage hook needs so it can BAIL on an unfamiliar actor
+/// layout rather than proceeding with a bogus 0 pointer. A new character can be a `Pl####`
+/// class with a different instance size, so an offset valid for known actors may fall outside
+/// its allocation — that returns `None` here instead of hard-faulting the game thread.
+pub fn read_ptr_guarded(base: usize, offset: usize) -> Option<usize> {
+    if base == 0 {
+        return None;
+    }
+    let addr = base.wrapping_add(offset);
+    if !readable(addr, std::mem::size_of::<usize>()) {
+        return None;
+    }
+    Some(unsafe { (addr as *const usize).read_unaligned() })
+}
+
+/// Read an `f32` at `base + offset`, returning `None` if `base` is null or the location isn't
+/// committed/readable. VirtualQuery-guarded — can NEVER fault the game. Used for the damage
+/// hook's stun-value read on the (possibly unfamiliar) target actor.
+pub fn read_f32_guarded(base: usize, offset: usize) -> Option<f32> {
+    if base == 0 {
+        return None;
+    }
+    let addr = base.wrapping_add(offset);
+    if !readable(addr, 4) {
+        return None;
+    }
+    Some(unsafe { (addr as *const f32).read_unaligned() })
+}
+
 /// Dump every nonzero `u32` in the window `[base, base+len)` as `+off=val` (hex offset,
 /// decimal value), for re-deriving struct field offsets from a live playthrough. Used for
 /// the Conflux/EndlessMode work (see hooks/endless.rs, quest.rs): walking room→room, the

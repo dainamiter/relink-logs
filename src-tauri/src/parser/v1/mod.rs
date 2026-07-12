@@ -649,6 +649,22 @@ impl Parser {
     /// If there was damage in that stopped instance, then save it as a new log.
     /// Otherwise, we're waiting for the encounter to start.
     pub fn on_area_enter_event(&mut self, event: AreaEnterEvent) {
+        // Leaving to a normal area ends any active Conflux run (the common case the manager
+        // dtor misses: finish a run, exit to town). finalize_active_run saves the final room
+        // stamped with its run_id/room_index and writes room_count/duration/completed, so we
+        // must NOT then also save it as a normal (run_id-null) encounter below.
+        if self.active_run_id.is_some() {
+            // Left Conflux for a normal area → run ended, but not via the reward path.
+            self.finalize_active_run(false);
+            self.encounter.quest_id = Some(event.last_known_quest_id);
+            self.encounter.quest_completed = false;
+            self.encounter.reset_player_data();
+            if let Some(window) = &self.window_handle {
+                let _ = window.emit("on-area-enter", &self.derived_state);
+            }
+            return;
+        }
+
         self.encounter.quest_id = Some(event.last_known_quest_id);
 
         if self.status == ParserStatus::InProgress {
@@ -996,9 +1012,9 @@ impl Parser {
 
         if is_new_run {
             // Close out any prior run before opening the new one (defensive: normally the
-            // manager dtor already finalized it).
+            // manager dtor already finalized it). Superseded by a new run → not "completed".
             if self.active_run_id.is_some() {
-                self.finalize_active_run();
+                self.finalize_active_run(false);
             }
             self.start_conflux_run(event.manager_ptr);
         } else {
@@ -1048,24 +1064,31 @@ impl Parser {
         }
     }
 
-    /// The Conflux run ends (manager destroyed). Only finalizes if the destroyed
-    /// manager matches the active run — a stray dtor for another manager is ignored.
-    pub fn on_conflux_run_end(&mut self, event: ConfluxRunEndEvent) {
+    /// The Conflux run ends (manager destroyed). Finalizes the active run.
+    ///
+    /// We deliberately do NOT require `event.manager_ptr == active_run_manager`: live logs
+    /// show the `EndlessModeQuestManager` dtor is unreliable — it fires rarely (≈once/session)
+    /// and when it does the freed pointer often does not match the manager the reception
+    /// dispatcher reported for the active run (heap churn / a different manager object being
+    /// torn down). Since only one run is ever active at a time, any manager-dtor is treated as
+    /// "the current run ended". The primary boundary is still finalize-on-next-start
+    /// (`on_conflux_room_enter`); this dtor path is the secondary end signal.
+    pub fn on_conflux_run_end(&mut self, _event: ConfluxRunEndEvent) {
         if self.active_run_id.is_none() {
             return;
         }
-        // A manager_ptr of 0 means "unknown" (older/edge emit) — finalize the active run
-        // regardless; otherwise require the pointer to match this run.
-        if event.manager_ptr != 0 && event.manager_ptr != self.active_run_manager {
-            return;
-        }
-        self.finalize_active_run();
+        // The dtor is the run's natural end (reward/exit reached) → completed.
+        self.finalize_active_run(true);
     }
 
     /// Saves the final in-progress room (if any) and finalizes the active run's row,
     /// then clears run state and notifies the frontend. Shared by the dtor path and the
-    /// "next run started" defensive path.
-    fn finalize_active_run(&mut self) {
+    /// "next run started"/"left to a normal area" defensive paths.
+    ///
+    /// `completed` records whether the run reached its natural end (the manager dtor / reward
+    /// screen) vs. was ended by leaving or being superseded by a new run — it drives the ✓/✗
+    /// shown in the Conflux tab. Only the dtor path passes `true`.
+    fn finalize_active_run(&mut self, completed: bool) {
         let Some(run_id) = self.active_run_id else {
             return;
         };
@@ -1088,7 +1111,7 @@ impl Parser {
                 now,
                 duration,
                 room_count,
-                true,
+                completed,
                 &self.active_run_buffs,
             );
         }
@@ -1319,6 +1342,34 @@ mod tests {
         let runs = crate::db::runs::get_runs(conn, 10, 0).unwrap();
         assert_eq!(runs.len(), 1, "one run");
         assert_eq!(runs[0].rooms.len(), 4, "four rooms grouped under it");
+    }
+
+    #[test]
+    fn leaving_to_normal_area_finalizes_active_run() {
+        // Regression for the live bug: a run played and then exited to town (no dtor, no next
+        // run) was left active forever, so its row kept room_count=0 / null duration/completed.
+        // on_area_enter_event must finalize it.
+        let mut parser = parser_with_memory_db();
+        const MGR: u64 = 0xFEED_0000_100;
+
+        for room in 0..3 {
+            parser.on_conflux_room_enter(room_enter(100 + room, MGR));
+            parser.on_damage_event(a_damage_event());
+        }
+        // Leave Conflux for a normal area — no dtor fires.
+        parser.on_area_enter_event(protocol::AreaEnterEvent {
+            last_known_quest_id: 0,
+            last_known_elapsed_time_in_secs: 0,
+        });
+
+        assert!(parser.active_run_id.is_none(), "run cleared after leaving");
+        let conn = parser.db.as_ref().unwrap();
+        let runs = crate::db::runs::get_runs(conn, 10, 0).unwrap();
+        assert_eq!(runs.len(), 1);
+        assert_eq!(runs[0].room_count, 3, "all three rooms counted");
+        assert_eq!(runs[0].rooms.len(), 3);
+        assert!(runs[0].duration.is_some(), "duration written");
+        assert_eq!(runs[0].completed, Some(false), "left, not reward-completed");
     }
 
     #[test]

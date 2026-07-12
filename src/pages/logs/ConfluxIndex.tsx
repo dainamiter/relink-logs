@@ -12,13 +12,6 @@ import { useTranslation } from "react-i18next";
 import { Link } from "react-router-dom";
 import useConfluxIndex from "./useConfluxIndex";
 
-function formatDamage(n: number | null): string {
-  if (n === null) return "-";
-  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
-  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`;
-  return String(n);
-}
-
 function RoomRow({ room, buffIds }: { room: ConfluxRoom; buffIds: number[] }) {
   const { t } = useTranslation();
   return (
@@ -35,9 +28,6 @@ function RoomRow({ room, buffIds }: { room: ConfluxRoom; buffIds: number[] }) {
       </Table.Td>
       <Table.Td>
         <Text size="xs">{millisecondsToElapsedFormat(room.duration)}</Text>
-      </Table.Td>
-      <Table.Td>
-        <Text size="xs">{formatDamage(room.totalDamage)}</Text>
       </Table.Td>
       <Table.Td>
         <Group gap={4}>
