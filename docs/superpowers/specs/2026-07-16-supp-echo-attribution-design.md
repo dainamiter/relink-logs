@@ -51,7 +51,17 @@ In `PlayerState::update_from_damage_event`, a `SupplementaryDamage(aid)` event:
 3. Classifies by ratio: compute `proc_damage / hit_damage` against each hit in
    the row's ring buffer and keep the ratio closest to 0.2 or 0.4. Below the
    0.283 midpoint → Supplementary; at or above → Echo. An empty buffer →
-   Supplementary.
+   Supplementary. Measured on the 10 most recent logs (ids 230–239,
+   2026-07-16), this classifies 93–100% of procs to a near-exact 0.2/0.4 match,
+   versus 84–92% for "previous hit is the trigger" (the game batches multi-hit
+   and AoE damage events before their procs, so strict ordering fails).
+   Refinements:
+   - Hits on the proc's target are tried first; an exact match there
+     (|r − target| < 0.002) ends the search. Exact matches elsewhere also end
+     the search — nothing can beat them.
+   - Ambiguous procs (window contains both a clean 0.2 and a clean 0.4
+     candidate — hits in a 2× ratio; measured at 0–1% per encounter)
+     tie-break to the same-target candidate, then to the most recent.
 4. Increments the chosen counters on that skill row.
 
 Ferry's remapped pet action_ids keep their existing behavior; attribution for
