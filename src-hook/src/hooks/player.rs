@@ -232,8 +232,6 @@ impl OnLoadPlayerHook {
 const PLAYER_IDENTITY_OFFSET: usize = 0x5E60;
 
 /// Offset of the owning player's key inside the player *record*.
-/// UNVERIFIED on this exe — carried over from onelittlechildawa's independent
-/// 2.0.2 fix. Read defensively (a wrong value is rejected below, never crashes).
 const PLAYER_KEY_OFFSET: usize = 0x5EA8;
 
 /// Offset of the owning player's key inside a concrete combat *actor* (the source
@@ -484,10 +482,8 @@ pub fn identity_event_for_actor(
         if seen.len() < 256 && seen.insert(actor_address) {
             let k44 =
                 crate::hooks::diag::read_u32_guarded(actor_address, ACTOR_PLAYER_KEY_OFFSET + 4);
-            let k64 = crate::hooks::diag::read_u32_guarded(
-                actor_address,
-                ACTOR_PLAYER_KEY_OFFSET + 0x24,
-            );
+            let k64 =
+                crate::hooks::diag::read_u32_guarded(actor_address, ACTOR_PLAYER_KEY_OFFSET + 0x24);
             log::info!(
                 "IDDIAG actor={actor_address:#x} type={character_type:#010x} idx={actor_index} id@1AB40={player_key:#010x} @1AB44={k44:#010x} @1AB64={k64:#010x}"
             );

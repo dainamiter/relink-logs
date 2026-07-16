@@ -514,6 +514,10 @@ pub struct Parser {
     /// Start timestamp (ms) of the active run.
     #[serde(skip)]
     active_run_start: i64,
+    /// A genuine quest-complete result screen (type 5) was seen during the active run.
+    /// The manager dtor rarely fires, so this is the primary "cleared" signal.
+    #[serde(skip)]
+    active_run_completed: bool,
     /// Last time (ms) the live cap counters were recounted against freshly-learned
     /// crit multipliers (see `on_damage_event` / `update_status`).
     #[serde(skip)]
@@ -759,11 +763,14 @@ impl Parser {
     }
 
     pub fn on_quest_complete_event(&mut self, event: QuestCompleteEvent) {
-        // A result screen can also fire mid-Conflux (the type-7 variant). Rooms and
-        // runs have their own save path (on_conflux_room_enter / finalize_active_run),
-        // so a completion during an active run must not save the room as a normal
-        // quest log — that would double-count it.
+        // Rooms and runs have their own save path (on_conflux_room_enter /
+        // finalize_active_run), so a completion during an active run must not save the
+        // room as a normal quest log — that would double-count it. But the hook only
+        // forwards genuine type-5 result screens, so seeing one mid-run means the run
+        // was cleared — record that for finalize (the manager dtor rarely fires, and
+        // the usual end path — exiting to town — can't tell cleared from abandoned).
         if self.active_run_id.is_some() {
+            self.active_run_completed = true;
             return;
         }
 
@@ -1127,11 +1134,16 @@ impl Parser {
         self.active_run_buffs.clear();
         self.active_run_start = now;
         self.active_run_manager = manager_ptr;
+        self.active_run_completed = false;
         if let Some(conn) = &self.db {
             match insert_run(conn, now) {
                 Ok(id) => self.active_run_id = Some(id),
                 Err(_) => self.active_run_id = None,
             }
+        }
+        // Let an open Conflux tab pick up the new (in-progress) run row immediately.
+        if let (Some(app), Some(id)) = (&self.app, self.active_run_id) {
+            let _ = app.emit_all("conflux-run-saved", id);
         }
     }
 
@@ -1181,8 +1193,15 @@ impl Parser {
             if self.status == ParserStatus::InProgress {
                 self.update_status(ParserStatus::Stopped);
                 if self.has_damage() {
-                    let _ = self.save_room_to_db();
+                    let saved = self.save_room_to_db();
                     self.active_room_index += 1;
+                    // Refresh an open Conflux tab so the room shows up mid-run, not
+                    // only at run end.
+                    if saved.is_ok() {
+                        if let (Some(app), Some(run_id)) = (&self.app, self.active_run_id) {
+                            let _ = app.emit_all("conflux-run-saved", run_id);
+                        }
+                    }
                 }
             }
         }
@@ -1244,13 +1263,18 @@ impl Parser {
     /// then clears run state and notifies the frontend. Shared by the dtor path and the
     /// "next run started"/"left to a normal area" defensive paths.
     ///
-    /// `completed` records whether the run reached its natural end (the manager dtor / reward
-    /// screen) vs. was ended by leaving or being superseded by a new run — it drives the ✓/✗
-    /// shown in the Conflux tab. Only the dtor path passes `true`.
+    /// `completed` records whether the run reached its natural end vs. was ended by leaving
+    /// or being superseded by a new run — it drives the ✓ shown in the Conflux tab. Only the
+    /// dtor path passes `true`, but a type-5 result screen observed mid-run
+    /// (`active_run_completed`) also marks the run cleared regardless of the end path.
     fn finalize_active_run(&mut self, completed: bool) {
         let Some(run_id) = self.active_run_id else {
             return;
         };
+
+        // A type-5 result screen observed during the run is a clear, whichever path
+        // ended the run (town exit, supersession, disconnect).
+        let completed = completed || self.active_run_completed;
 
         let mut room_count = self.active_room_index;
         if self.status == ParserStatus::InProgress {
@@ -1279,6 +1303,7 @@ impl Parser {
         self.active_run_manager = 0;
         self.active_run_buffs.clear();
         self.active_room_index = 0;
+        self.active_run_completed = false;
 
         if let Some(app) = &self.app {
             let _ = app.emit_all("conflux-run-saved", run_id);
@@ -1517,6 +1542,47 @@ mod tests {
             .unwrap();
         assert_eq!(quest_id, Some(0xBBBB));
         assert_eq!(timer, None, "failed quest must not inherit quest A's 213s timer");
+    }
+
+    #[test]
+    fn conflux_run_cleared_via_result_screen_then_town_exit() {
+        // The manager dtor rarely fires; the common end of a CLEARED run is a type-5
+        // result screen mid-run followed by exiting to town (area-enter). That exit
+        // path passes completed=false, but the observed result screen must win.
+        let mut parser = parser_with_memory_db();
+        const MGR: u64 = 0x2adb_30e0_100;
+
+        parser.on_conflux_room_enter(room_enter(10, MGR));
+        parser.on_damage_event(a_damage_event());
+
+        // Final room cleared: genuine quest-complete result screen fires mid-run.
+        parser.on_quest_complete_event(protocol::QuestCompleteEvent {
+            quest_id: 0x2231_B940,
+            elapsed_time_in_secs: 900,
+        });
+        assert!(
+            parser.active_run_id.is_some(),
+            "result screen must not end/save the run itself"
+        );
+
+        // Back to town — the path that used to mark the run ✗.
+        parser.on_area_enter_event(area_enter(0xAAAA));
+        assert!(parser.active_run_id.is_none(), "run closed by leaving Conflux");
+
+        let conn = parser.db.as_ref().unwrap();
+        let runs = crate::db::runs::get_runs(conn, 10, 0).unwrap();
+        assert_eq!(runs.len(), 1);
+        assert_eq!(
+            runs[0].completed,
+            Some(true),
+            "mid-run result screen marks the run cleared"
+        );
+        // Only the room log exists — the completion must not also save a normal log.
+        let log_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM logs", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(log_count, 1);
+        assert!(!parser.active_run_completed, "flag reset for the next run");
     }
 
     #[test]

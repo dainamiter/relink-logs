@@ -1,10 +1,5 @@
 import { ConfluxRoom, ConfluxRun } from "@/types";
-import {
-  epochToLocalTime,
-  millisecondsToElapsedFormat,
-  translateEnemyTypeId,
-  translateQuestId,
-} from "@/utils";
+import { epochToLocalTime, millisecondsToElapsedFormat, translateEnemyTypeId } from "@/utils";
 import { Badge, Box, Button, Center, Collapse, Divider, Group, Pagination, Table, Text } from "@mantine/core";
 import { CaretDown, CaretRight } from "@phosphor-icons/react";
 import { useState } from "react";
@@ -18,10 +13,7 @@ function RoomRow({ room, buffIds }: { room: ConfluxRoom; buffIds: number[] }) {
     <Table.Tr>
       <Table.Td />
       <Table.Td>
-        <Text size="xs">#{room.roomIndex + 1}</Text>
-      </Table.Td>
-      <Table.Td>
-        <Text size="xs">{room.questId ? translateQuestId(room.questId) : ""}</Text>
+        <Text size="xs">Room #{room.roomIndex + 1}</Text>
       </Table.Td>
       <Table.Td>
         <Text size="xs">{room.primaryTarget !== null ? translateEnemyTypeId(room.primaryTarget) : ""}</Text>
@@ -70,7 +62,19 @@ function RunRow({ run }: { run: ConfluxRun }) {
           <Text size="xs">{run.duration ? millisecondsToElapsedFormat(run.duration) : ""}</Text>
         </Table.Td>
         <Table.Td>
-          <Text size="xs">{run.completed === null ? "" : run.completed ? "✓" : "✗"}</Text>
+          {/* completed=false only means the reward screen wasn't observed (the usual
+              town-exit path can't tell cleared from abandoned) — never show it as a failure. */}
+          {run.completed ? (
+            <Text size="xs">✓</Text>
+          ) : run.endTime === null ? (
+            <Text size="xs" c="dimmed">
+              In progress
+            </Text>
+          ) : (
+            <Text size="xs" c="dimmed">
+              —
+            </Text>
+          )}
         </Table.Td>
         <Table.Td />
         <Table.Td />

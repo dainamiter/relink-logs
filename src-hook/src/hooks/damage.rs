@@ -81,12 +81,11 @@ impl OnProcessDamageHook {
         use crate::hooks::diag::{read_f32_guarded, read_ptr_guarded};
 
         // a1+0x08 -> *ptr -> target specified instance. Two hops, each guarded.
-        let target_specified_instance_ptr = match read_ptr_guarded(a1 as usize, 0x08)
-            .and_then(|p| read_ptr_guarded(p, 0x00))
-        {
-            Some(ptr) if ptr != 0 => ptr,
-            _ => return unsafe { ProcessDamageEvent.call(a1, a2, a3, a4) },
-        };
+        let target_specified_instance_ptr =
+            match read_ptr_guarded(a1 as usize, 0x08).and_then(|p| read_ptr_guarded(p, 0x00)) {
+                Some(ptr) if ptr != 0 => ptr,
+                _ => return unsafe { ProcessDamageEvent.call(a1, a2, a3, a4) },
+            };
 
         // v2.0.2: the stun accumulator moved target+0xA70 -> +0xB90. Live-derived via
         // the stun_scan probe (2026-07-15, three targets across three sessions): +0xB90
@@ -260,8 +259,6 @@ impl OnProcessDamageHook {
             let _ = self.tx.send(Message::PlayerIdentityEvent(identity));
         }
 
-        // Id's dragon form: one-shot scan for the new Pl2000->Pl1900 parent-link
-        // offset (0xD488 is stale on v2.0.2, which splits Id into two meter rows).
         #[cfg(feature = "hookdiag")]
         if source_type_id == 0xF5755C0E {
             crate::hooks::diag::probe_pl2000_parent(source_specified_instance_ptr);
@@ -340,8 +337,8 @@ impl OnProcessDotHook {
         // v2.0.2: the old sig's post-call byte (`4c`) changed to `8b f8` (mov edi,eax);
         // re-anchored on the surviving caller context. Resolves to entry 0x477cdb0
         // (verified a clean 2-arg function entry via Ghidra).
-        if let Ok(process_dot_evt) = process
-            .search_address("44 89 74 24 ? 48 8d 54 24 ? 48 8b ce e8 $ { ' } 8b f8 85 c0")
+        if let Ok(process_dot_evt) =
+            process.search_address("44 89 74 24 ? 48 8d 54 24 ? 48 8b ce e8 $ { ' } 8b f8 85 c0")
         {
             #[cfg(feature = "console")]
             println!("Found process dot event");

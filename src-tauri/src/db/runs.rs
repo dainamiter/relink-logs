@@ -36,6 +36,23 @@ pub struct ConfluxRun {
     pub rooms: Vec<ConfluxRoom>,
 }
 
+pub fn sweep_orphaned_runs(conn: &Connection) -> Result<()> {
+    conn.execute(
+        "DELETE FROM runs WHERE end_time IS NULL
+         AND NOT EXISTS (SELECT 1 FROM logs WHERE logs.run_id = runs.id)",
+        [],
+    )?;
+    conn.execute(
+        "UPDATE runs SET
+            end_time = (SELECT MAX(time + duration) FROM logs WHERE logs.run_id = runs.id),
+            duration = MAX((SELECT MAX(time + duration) FROM logs WHERE logs.run_id = runs.id), start_time) - start_time,
+            room_count = (SELECT COUNT(*) FROM logs WHERE logs.run_id = runs.id)
+         WHERE end_time IS NULL",
+        [],
+    )?;
+    Ok(())
+}
+
 /// Inserts a new in-progress run, returning its id.
 pub fn insert_run(conn: &Connection, start_time: i64) -> Result<i64> {
     conn.execute(
@@ -87,12 +104,27 @@ pub fn get_runs(conn: &Connection, per_page: u32, offset: u32) -> Result<Vec<Con
     let run_tuples = run_rows.collect::<rusqlite::Result<Vec<_>>>()?;
 
     let mut runs = Vec::new();
-    for (id, start_time, end_time, duration, room_count, completed, buffs_json) in run_tuples {
+    for (id, start_time, end_time, duration, _room_count, completed, buffs_json) in run_tuples {
         let buffs: Vec<ConfluxBuffDelta> = buffs_json
             .as_deref()
             .and_then(|s| serde_json::from_str(s).ok())
             .unwrap_or_default();
         let rooms = get_rooms_for_run(conn, id)?;
+        // The stored room_count/duration columns are only written at finalize, so an
+        // in-progress (or orphaned) run would show 0 rooms and no duration. Derive
+        // both from the room logs instead: count what's actually saved, and fall back
+        // to "end of the last saved room minus run start" for the duration.
+        let room_count = rooms.len() as u32;
+        let duration = duration.or_else(|| {
+            conn.query_row(
+                "SELECT MAX(time + duration) FROM logs WHERE run_id = ?",
+                params![id],
+                |r| r.get::<_, Option<i64>>(0),
+            )
+            .ok()
+            .flatten()
+            .map(|last_room_end| (last_room_end - start_time).max(0))
+        });
         runs.push(ConfluxRun {
             id,
             start_time,
@@ -153,6 +185,73 @@ mod tests {
         ]);
         migrations.to_latest(&mut conn).unwrap();
         conn
+    }
+
+    #[test]
+    fn sweep_closes_orphans_with_rooms_and_deletes_empty_ones() {
+        let conn = migrated_conn();
+
+        // Orphan WITH rooms: gets closed out from its last room's end.
+        let orphan = insert_run(&conn, 1_000).unwrap();
+        conn.execute(
+            "INSERT INTO logs (name, time, duration, data, version, run_id, room_index) VALUES ('',2000,5000,x'00',1,?,0)",
+            params![orphan],
+        ).unwrap();
+
+        // Orphan WITHOUT rooms: junk row, deleted.
+        let empty = insert_run(&conn, 5_000).unwrap();
+
+        // Properly finalized run: untouched.
+        let done = insert_run(&conn, 9_000).unwrap();
+        finalize_run(&conn, done, 20_000, 11_000, 1, true, &[]).unwrap();
+
+        sweep_orphaned_runs(&conn).unwrap();
+
+        let runs = get_runs(&conn, 10, 0).unwrap();
+        assert_eq!(runs.len(), 2, "empty orphan deleted");
+        assert!(!runs.iter().any(|r| r.id == empty));
+
+        let swept = runs.iter().find(|r| r.id == orphan).unwrap();
+        assert_eq!(
+            swept.end_time,
+            Some(7_000),
+            "closed at last room end (2000+5000)"
+        );
+        assert_eq!(swept.duration, Some(6_000));
+        assert_eq!(
+            swept.completed, None,
+            "outcome never observed stays unknown"
+        );
+
+        let finalized = runs.iter().find(|r| r.id == done).unwrap();
+        assert_eq!(finalized.completed, Some(true));
+        assert_eq!(finalized.duration, Some(11_000));
+    }
+
+    #[test]
+    fn in_progress_run_derives_room_count_and_duration_from_saved_rooms() {
+        // The stored room_count/duration columns are only written at finalize; an
+        // in-progress (or orphaned) run must still show its saved rooms and elapsed
+        // time instead of "×0 rooms" with a blank duration.
+        let conn = migrated_conn();
+        let run_id = insert_run(&conn, 1_000).unwrap();
+
+        conn.execute(
+            "INSERT INTO logs (name, time, duration, data, version, run_id, room_index) VALUES ('',2000,5000,x'00',1,?,0)",
+            params![run_id],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO logs (name, time, duration, data, version, run_id, room_index) VALUES ('',9000,4000,x'00',1,?,1)",
+            params![run_id],
+        ).unwrap();
+
+        let runs = get_runs(&conn, 10, 0).unwrap();
+        assert_eq!(runs.len(), 1);
+        let run = &runs[0];
+        assert_eq!(run.room_count, 2, "counts the saved rooms, not the column");
+        // Last room ends at 9000+4000=13000; run started at 1000.
+        assert_eq!(run.duration, Some(12_000));
+        assert_eq!(run.completed, None);
     }
 
     #[test]

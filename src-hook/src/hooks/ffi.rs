@@ -9,7 +9,7 @@ use std::ffi::CString;
 //   0xD4  FINAL displayed damage (i32) — live-verified 2026-07-11: exactly matches the
 //         in-game hit numbers on both the main hit (111348 = cap 92790 × 1.2 crit) and
 //         its supplementary hit (44539), while 0xD0 read 212736 for both. Post-cap,
-//         post-crit. (Corroborates onelittlechildawa's independent 2.0.2 fix.)
+//         post-crit.
 //   0xD8  f32 rate, 0xDC f32 rate — a pair of attack-rate floats (skill 212 shows 16.17
 //         at 0xDC, its known attack rate). The OLD code read `flags` here, so link/SBA
 //         classification was reading float bit patterns (usually 0 for the tested bits).
@@ -22,16 +22,16 @@ use std::ffi::CString;
 #[derive(Debug)]
 #[repr(C)]
 pub struct DamageInstance {
-    padding_00: [u8; 0xD4],   // 0x00 - 0xD4 (0xD0 = shared per-action value, see above)
-    pub damage: i32,          // 0xD4 final displayed damage
-    padding_d8: [u8; 0x04],   // 0xD8 rate float
-    pub attack_rate: f32,     // 0xDC
-    padding_e0: [u8; 0x08],   // 0xE0 - 0xE8
-    pub flags: u64,           // 0xE8
-    padding_f0: [u8; 0x7C],   // 0xF0 - 0x16C
-    pub action_id: u32,       // 0x16C
+    padding_00: [u8; 0xD4], // 0x00 - 0xD4 (0xD0 = shared per-action value, see above)
+    pub damage: i32,        // 0xD4 final displayed damage
+    padding_d8: [u8; 0x04], // 0xD8 rate float
+    pub attack_rate: f32,   // 0xDC
+    padding_e0: [u8; 0x08], // 0xE0 - 0xE8
+    pub flags: u64,         // 0xE8
+    padding_f0: [u8; 0x7C], // 0xF0 - 0x16C
+    pub action_id: u32,     // 0x16C
     padding_170: [u8; 0x14C], // 0x170 - 0x2BC
-    pub damage_cap: i32,      // 0x2BC
+    pub damage_cap: i32,    // 0x2BC
 }
 
 #[derive(Debug)]

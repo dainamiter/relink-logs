@@ -462,8 +462,7 @@ async fn check_and_perform_hook(app: AppHandle) {
                 let debug_dll_path = Path::new("hook-dbg.dll");
                 let mut dll_path = Path::new("hook.dll");
 
-                // If the debug DLL is present, use it instead.
-                if debug_dll_path.exists() {
+                if cfg!(debug_assertions) && debug_dll_path.exists() {
                     dll_path = debug_dll_path;
                 }
 

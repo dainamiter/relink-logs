@@ -57,6 +57,8 @@ pub fn setup_db() -> Result<()> {
 
     migrations.to_latest(&mut conn)?;
 
+    runs::sweep_orphaned_runs(&conn)?;
+
     Ok(())
 }
 

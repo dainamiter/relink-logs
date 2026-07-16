@@ -29,6 +29,10 @@ mod sba;
 
 type GetEntityHashID0x58 = unsafe extern "system" fn(*const usize, *const u32) -> *const usize;
 
+/// Pl1900 (Id, human form) actor type hash.
+const ID_HUMAN_TYPE: u32 = 0x8056ABCD;
+const ID_DRAGON_PARENT_ENTITY_OFFSET: usize = 0x1CA98;
+
 /// Run one hook/global setup step, logging (and swallowing) any error so that a
 /// single broken signature does not prevent every other hook from installing.
 ///
@@ -65,12 +69,21 @@ pub fn setup_hooks(tx: event::Tx) -> Result<()> {
     try_step("globals", globals::setup_globals(&process));
 
     /* Damage Events */
-    try_step("process_damage", OnProcessDamageHook::new(tx.clone()).setup(&process));
-    try_step("process_dot", OnProcessDotHook::new(tx.clone()).setup(&process));
+    try_step(
+        "process_damage",
+        OnProcessDamageHook::new(tx.clone()).setup(&process),
+    );
+    try_step(
+        "process_dot",
+        OnProcessDotHook::new(tx.clone()).setup(&process),
+    );
     try_step("death", OnDeathHook::new(tx.clone()).setup(&process));
 
     /* Player Data */
-    try_step("player_load", OnLoadPlayerHook::new(tx.clone()).setup(&process));
+    try_step(
+        "player_load",
+        OnLoadPlayerHook::new(tx.clone()).setup(&process),
+    );
 
     // Game 2.0.2 identity path: the full player_load layout (sigil/weapon/overmastery
     // offsets) is not yet re-derived, so player_load above no longer fires. This hook
@@ -90,9 +103,18 @@ pub fn setup_hooks(tx: event::Tx) -> Result<()> {
     );
 
     /* Quest + Area Tracking */
-    try_step("area_enter", OnAreaEnterHook::new(tx.clone()).setup(&process));
-    try_step("quest_load_state", OnLoadQuestHook::new(tx.clone()).setup(&process));
-    try_step("quest_complete", OnQuestCompleteHook::new(tx.clone()).setup(&process));
+    try_step(
+        "area_enter",
+        OnAreaEnterHook::new(tx.clone()).setup(&process),
+    );
+    try_step(
+        "quest_load_state",
+        OnLoadQuestHook::new(tx.clone()).setup(&process),
+    );
+    try_step(
+        "quest_complete",
+        OnQuestCompleteHook::new(tx.clone()).setup(&process),
+    );
 
     /* Conflux / EndlessMode — emits run-start / buff / run-end messages so the parser can
     group a run's rooms + buffs (room-enter itself comes from quest_load_state above). The
@@ -111,11 +133,26 @@ pub fn setup_hooks(tx: event::Tx) -> Result<()> {
     );
 
     /* SBA */
-    try_step("sba_update", OnHandleSBAUpdateHook::new(tx.clone()).setup(&process));
-    try_step("sba_remote_update", OnRemoteSBAUpdateHook::new(tx.clone()).setup(&process));
-    try_step("sba_attempt", OnAttemptSBAHook::new(tx.clone()).setup(&process));
-    try_step("sba_collision", OnCheckSBACollisionHook::new(tx.clone()).setup(&process));
-    try_step("sba_continue_chain", OnContinueSBAChainHook::new(tx.clone()).setup(&process));
+    try_step(
+        "sba_update",
+        OnHandleSBAUpdateHook::new(tx.clone()).setup(&process),
+    );
+    try_step(
+        "sba_remote_update",
+        OnRemoteSBAUpdateHook::new(tx.clone()).setup(&process),
+    );
+    try_step(
+        "sba_attempt",
+        OnAttemptSBAHook::new(tx.clone()).setup(&process),
+    );
+    try_step(
+        "sba_collision",
+        OnCheckSBACollisionHook::new(tx.clone()).setup(&process),
+    );
+    try_step(
+        "sba_continue_chain",
+        OnContinueSBAChainHook::new(tx.clone()).setup(&process),
+    );
 
     Ok(())
 }
@@ -164,8 +201,11 @@ pub fn get_source_parent(source_type_id: u32, source: *const usize) -> Option<(u
         }
         // Pl2000: Id's Dragon Form -> Pl1900
         0xF5755C0E => {
-            let parent_instance = parent_specified_instance_at(source, 0xD488)?;
-            Some((actor_type_id(parent_instance), actor_idx(parent_instance)))
+            let parent_instance =
+                parent_specified_instance_at(source, ID_DRAGON_PARENT_ENTITY_OFFSET)?;
+
+            let parent_idx = diag::read_ptr_guarded(parent_instance as usize, 0x170)? as u32;
+            Some((ID_HUMAN_TYPE, parent_idx))
         }
         // Wp2290: Seofon's Avatar
         0x5B1AB457 => {
@@ -184,15 +224,69 @@ pub fn get_source_parent(source_type_id: u32, source: *const usize) -> Option<(u
 // Returns the specified instance of the parent entity.
 // ptr+offset: Entity
 // *(ptr+offset) + 0x70: m_pSpecifiedInstance (Pl0700, Pl1200, etc.)
+//
+// Both hops are SEH-guarded: these parent-link offsets are version-fragile, and a
+// stale one (or a pet/form instance smaller than the offset) previously meant a raw
+// deref of unmapped memory on the game thread — the silent-freeze class of bug. A
+// failed read just leaves the child actor ungrouped.
 #[inline(always)]
 fn parent_specified_instance_at(actor_ptr: *const usize, offset: usize) -> Option<*const usize> {
-    unsafe {
-        let info = (actor_ptr.byte_add(offset) as *const *const *const usize).read_unaligned();
+    let entity = diag::read_ptr_guarded(actor_ptr as usize, offset)?;
+    if entity == 0 {
+        return None;
+    }
 
-        if info.is_null() {
-            return None;
+    let parent = diag::read_ptr_guarded(entity, 0x70)?;
+    (parent != 0).then_some(parent as *const usize)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{parent_specified_instance_at, ID_DRAGON_PARENT_ENTITY_OFFSET};
+
+    #[test]
+    fn resolves_parent_through_the_entity_link() {
+        let parent = Box::new(0usize);
+        let parent_ptr = &*parent as *const usize;
+        let mut entity = vec![0u8; 0x78];
+        let mut actor = vec![0u8; ID_DRAGON_PARENT_ENTITY_OFFSET + std::mem::size_of::<usize>()];
+
+        unsafe {
+            entity
+                .as_mut_ptr()
+                .byte_add(0x70)
+                .cast::<*const usize>()
+                .write_unaligned(parent_ptr);
+            actor
+                .as_mut_ptr()
+                .byte_add(ID_DRAGON_PARENT_ENTITY_OFFSET)
+                .cast::<*const u8>()
+                .write_unaligned(entity.as_ptr());
         }
 
-        Some(info.byte_add(0x70).read())
+        assert_eq!(
+            parent_specified_instance_at(
+                actor.as_ptr().cast::<usize>(),
+                ID_DRAGON_PARENT_ENTITY_OFFSET,
+            ),
+            Some(parent_ptr)
+        );
+    }
+
+    #[test]
+    fn invalid_actor_address_fails_without_dereferencing() {
+        assert_eq!(
+            parent_specified_instance_at(1usize as *const usize, 0),
+            None
+        );
+    }
+
+    #[test]
+    fn null_entity_link_yields_no_parent() {
+        let actor = vec![0u8; 0x100];
+        assert_eq!(
+            parent_specified_instance_at(actor.as_ptr().cast(), 0x40),
+            None
+        );
     }
 }
