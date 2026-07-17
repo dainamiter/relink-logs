@@ -43,6 +43,7 @@ import {
   exportFullEncounterToClipboard,
   exportScreenshotToClipboard,
   exportSimpleEncounterToClipboard,
+  formatCharacterLabel,
   formatInPartyOrder,
   humanizeNumbers,
   millisecondsToElapsedFormat,
@@ -53,7 +54,10 @@ import {
   translateOvermasteryId,
   translateQuestId,
   translateSigilId,
+  translateSummonBonusId,
+  translateSummonId,
   translateTraitId,
+  translateWeaponKey,
   translatedPlayerName,
 } from "@/utils";
 import { useTranslation } from "react-i18next";
@@ -61,11 +65,22 @@ import { useShallow } from "zustand/react/shallow";
 
 type Label = { name: string; partySlotIndex: number; label?: string; color: string; strokeDasharray?: string }[];
 
+// The single-bit level flag (bit N → level N+1) → a 1-based level, or 0 if unset.
+const overmasteryLevel = (flags: number): number => (flags === 0 ? 0 : Math.log2(flags & -flags) + 1);
+
 const formatOvermastery = (overmastery: Overmastery | undefined): string => {
   if (!overmastery) return "";
 
-  const value = overmastery.value.toFixed(0);
   const translation = translateOvermasteryId(overmastery.id);
+
+  // v2.0.2: overmasteries recovered from the town loadout carry only id + level
+  // (in `flags`), not the computed in-game magnitude (`value` is 0). Show the
+  // level, matching the "(Lvl. N)" style used for sigils and summons.
+  if (overmastery.value === 0) {
+    return `${translation} (Lvl. ${overmasteryLevel(overmastery.flags)})`;
+  }
+
+  const value = overmastery.value.toFixed(0);
   const regularNumbers = [
     0x032a5217, 0x0781c7a2, 0x0b134a7f, 0x0cf5d0f3, 0x0db88f30, 0x0f25b474, 0x0febc993, 0x11023c6f, 0x124db819,
     0x1268b903, 0x13c9452a, 0x155c25c3, 0x1cc2f730, 0x1e2b3db5, 0x24499a25, 0x254a08d4, 0x2d6c03eb, 0x2ea457f3,
@@ -99,22 +114,9 @@ const formatOvermastery = (overmastery: Overmastery | undefined): string => {
 };
 
 const formatPlayerDisplayName = (player: PlayerData, showName: boolean, showLevel: boolean = true): string => {
-  const displayName = player.displayName;
-  const characterType = t(`characters:${player.characterType}`, `ui:characters.${player.characterType}`);
+  const label = formatCharacterLabel(player.characterType, player.displayName, showName);
 
-  if (showLevel) {
-    if (displayName === "" || !showName) {
-      return `${characterType} Lvl. ${player.playerStats?.level || 1}`;
-    } else {
-      return `${displayName} (${characterType}) Lvl. ${player.playerStats?.level || 1}`;
-    }
-  }
-
-  if (displayName === "" || !showName) {
-    return `${characterType}`;
-  } else {
-    return `${displayName} (${characterType})`;
-  }
+  return showLevel ? `${label} Lvl. ${player.playerStats?.level || 1}` : label;
 };
 
 // Returns a string of stars based on the star level.
@@ -624,21 +626,36 @@ export const ViewPage = () => {
                           <Text size="xs" fs="italic" fw={300}>
                             {t("ui.stats.level")}: {player.playerStats?.level || 1}
                           </Text>
-                          <Text size="xs" fs="italic" fw={300}>
-                            {t("ui.stats.total-hp")}: {player.playerStats?.totalHp || 1}
-                          </Text>
-                          <Text size="xs" fs="italic" fw={300}>
-                            {t("ui.stats.total-attack")}: {player.playerStats?.totalAttack || 1}
-                          </Text>
-                          <Text size="xs" fs="italic" fw={300}>
-                            {t("ui.stats.critical-rate")}: {(player.playerStats?.criticalRate || 0).toFixed(0)}%
-                          </Text>
-                          <Text size="xs" fs="italic" fw={300}>
-                            {t("ui.stats.stun-power")}: {((player.playerStats?.stunPower || 0) * 10).toFixed(0)}
-                          </Text>
-                          <Text size="xs" fs="italic" fw={300}>
-                            {t("ui.stats.total-power")}: {player.playerStats?.totalPower || 1}
-                          </Text>
+                          {(player.masterLevel || 0) > 0 && (
+                            <Text size="xs" fs="italic" fw={300}>
+                              {/* The game stores level+stars combined (cap 50, then stars). */}
+                              {t("ui.stats.master-level")}:{" "}
+                              {player.masterLevel > 50 ? `50 (+${player.masterLevel - 50}★)` : player.masterLevel}
+                            </Text>
+                          )}
+                          {/* HP/ATK/crit/stun/power come only from the full PlayerLoadEvent, whose
+                              v2.0.2 offsets aren't re-derived yet; hide them rather than show
+                              misleading defaults. `totalPower` is set only by that event, so it
+                              gates the whole block. Level above comes from the town loadout. */}
+                          {(player.playerStats?.totalPower || 0) > 0 && (
+                            <>
+                              <Text size="xs" fs="italic" fw={300}>
+                                {t("ui.stats.total-hp")}: {player.playerStats?.totalHp || 1}
+                              </Text>
+                              <Text size="xs" fs="italic" fw={300}>
+                                {t("ui.stats.total-attack")}: {player.playerStats?.totalAttack || 1}
+                              </Text>
+                              <Text size="xs" fs="italic" fw={300}>
+                                {t("ui.stats.critical-rate")}: {(player.playerStats?.criticalRate || 0).toFixed(0)}%
+                              </Text>
+                              <Text size="xs" fs="italic" fw={300}>
+                                {t("ui.stats.stun-power")}: {((player.playerStats?.stunPower || 0) * 10).toFixed(0)}
+                              </Text>
+                              <Text size="xs" fs="italic" fw={300}>
+                                {t("ui.stats.total-power")}: {player.playerStats?.totalPower || 1}
+                              </Text>
+                            </>
+                          )}
                         </Table.Td>
                       );
                     })}
@@ -656,7 +673,10 @@ export const ViewPage = () => {
                             const overmastery = overmasteries[overmasteryIndex];
 
                             return (
-                              <Placeholder key={overmasteryIndex} empty={!overmastery || overmastery.value === 0}>
+                              <Placeholder
+                                key={overmasteryIndex}
+                                empty={!overmastery || (overmastery.value === 0 && overmastery.flags === 0)}
+                              >
                                 <Text size="xs" fs="italic" fw={300}>
                                   {formatOvermastery(overmastery)}
                                 </Text>
@@ -674,41 +694,85 @@ export const ViewPage = () => {
                           <Text size="xs" fw={700}>
                             {t("ui.weapon")}
                           </Text>
-                          <Text size="xs" fs="italic" fw={300}>
-                            {createWeaponStars(player.weaponInfo?.starLevel || 0)}
-                          </Text>
-                          <Text size="xs" fs="italic" fw={300}>
-                            {t([`weapons:${toHashString(player.weaponInfo?.weaponId)}.text`, "unknown"])} +
-                            {player.weaponInfo?.plusMarks}
-                          </Text>
-                          <Text size="xs" fs="italic" fw={300}>
-                            Awakening {player.weaponInfo?.awakeningLevel || 0}/10
-                          </Text>
-                          <Text size="xs" fs="italic" fw={300}>
-                            Lvl {player.weaponInfo?.weaponLevel || 0} / ATK {player.weaponInfo?.weaponAttack || 0} / HP{" "}
-                            {player.weaponInfo?.weaponHp || 0}
-                          </Text>
+                          {/* The full stat block comes only from the legacy PlayerLoadEvent; on
+                              v2.0.2 the identity path recovers the weapon IDENTITY (key name) via
+                              the save-side charid map, so show at least the weapon name when the
+                              full info is absent. */}
+                          {!player.weaponInfo ? (
+                            player.weaponKey ? (
+                              <Text size="xs" fs="italic" fw={300}>
+                                {translateWeaponKey(player.weaponKey)}
+                              </Text>
+                            ) : (
+                              <Placeholder empty />
+                            )
+                          ) : (
+                            <>
+                              <Text size="xs" fs="italic" fw={300}>
+                                {createWeaponStars(player.weaponInfo?.starLevel || 0)}
+                              </Text>
+                              <Text size="xs" fs="italic" fw={300}>
+                                {t([`weapons:${toHashString(player.weaponInfo?.weaponId)}.text`, "unknown"])} +
+                                {player.weaponInfo?.plusMarks}
+                              </Text>
+                              <Text size="xs" fs="italic" fw={300}>
+                                Awakening {player.weaponInfo?.awakeningLevel || 0}/10
+                              </Text>
+                              <Text size="xs" fs="italic" fw={300}>
+                                Lvl {player.weaponInfo?.weaponLevel || 0} / ATK {player.weaponInfo?.weaponAttack || 0} /
+                                HP {player.weaponInfo?.weaponHp || 0}
+                              </Text>
+                              <Text size="xs" fw={700}>
+                                {translateItemId(player.weaponInfo?.wrightstoneId || EMPTY_ID)}
+                              </Text>
+                              <Placeholder empty={!player.weaponInfo?.trait1Id || player.weaponInfo?.trait1Level == 0}>
+                                <Text size="xs" fs="italic" fw={300}>
+                                  - {translateTraitId(player.weaponInfo?.trait1Id || EMPTY_ID)} (Lvl.{" "}
+                                  {player.weaponInfo?.trait1Level})
+                                </Text>
+                              </Placeholder>
+                              <Placeholder empty={!player.weaponInfo?.trait2Id || player.weaponInfo?.trait2Level == 0}>
+                                <Text size="xs" fs="italic" fw={300}>
+                                  - {translateTraitId(player.weaponInfo?.trait2Id || EMPTY_ID)} (Lvl.{" "}
+                                  {player.weaponInfo?.trait2Level})
+                                </Text>
+                              </Placeholder>
+                              <Placeholder empty={!player.weaponInfo?.trait3Id || player.weaponInfo?.trait3Level == 0}>
+                                <Text size="xs" fs="italic" fw={300}>
+                                  - {translateTraitId(player.weaponInfo?.trait3Id || EMPTY_ID)} (Lvl.{" "}
+                                  {player.weaponInfo?.trait3Level})
+                                </Text>
+                              </Placeholder>
+                            </>
+                          )}
+                        </Table.Td>
+                      );
+                    })}
+                  </Table.Tr>
+                  <Table.Tr>
+                    {playerData.map((player) => {
+                      const summons = player.summons ?? [];
+
+                      return (
+                        <Table.Td key={player.actorIndex}>
                           <Text size="xs" fw={700}>
-                            {translateItemId(player.weaponInfo?.wrightstoneId || EMPTY_ID)}
+                            {t("ui.player-summons")}
                           </Text>
-                          <Placeholder empty={!player.weaponInfo?.trait1Id || player.weaponInfo?.trait1Level == 0}>
-                            <Text size="xs" fs="italic" fw={300}>
-                              - {translateTraitId(player.weaponInfo?.trait1Id || EMPTY_ID)} (Lvl.{" "}
-                              {player.weaponInfo?.trait1Level})
-                            </Text>
-                          </Placeholder>
-                          <Placeholder empty={!player.weaponInfo?.trait2Id || player.weaponInfo?.trait2Level == 0}>
-                            <Text size="xs" fs="italic" fw={300}>
-                              - {translateTraitId(player.weaponInfo?.trait2Id || EMPTY_ID)} (Lvl.{" "}
-                              {player.weaponInfo?.trait2Level})
-                            </Text>
-                          </Placeholder>
-                          <Placeholder empty={!player.weaponInfo?.trait3Id || player.weaponInfo?.trait3Level == 0}>
-                            <Text size="xs" fs="italic" fw={300}>
-                              - {translateTraitId(player.weaponInfo?.trait3Id || EMPTY_ID)} (Lvl.{" "}
-                              {player.weaponInfo?.trait3Level})
-                            </Text>
-                          </Placeholder>
+                          {Array.from(Array(4).keys()).map((summonIndex) => {
+                            const summon = summons[summonIndex];
+
+                            return (
+                              <Placeholder key={summonIndex} empty={!summon}>
+                                {summon && (
+                                  <Text size="xs" fs="italic" fw={300}>
+                                    {translateSummonId(summon.summonId)} — {translateTraitId(summon.mainTraitId)} (Lvl.{" "}
+                                    {summon.mainTraitLevel}) / {translateSummonBonusId(summon.bonusId)} (Lvl.{" "}
+                                    {summon.bonusLevel + 1})
+                                  </Text>
+                                )}
+                              </Placeholder>
+                            );
+                          })}
                         </Table.Td>
                       );
                     })}

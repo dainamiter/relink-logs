@@ -34,8 +34,6 @@
     "show-full-values-description": "Show full values in the meter.",
     "use-condensed-skills": "Use Condensed Skill Names",
     "use-condensed-skills-description": "Groups various skills into one entry (e.g. Attack 1, Attack 2 would condense into just \"Attack\")",
-    "merge-supplementary": "Merge Supplementary/Echo into skills",
-    "merge-supplementary-description": "Show Supplementary and Echo proc damage as part of the skill that triggered it, instead of a separate Supplementary Damage row.",
     "open-log-on-save": "Open Log on Save",
     "open-log-on-save-description": "Automatically open the log after saving an encounter.",
     "debug-mode": "Debug Mode",
@@ -43,6 +41,7 @@
     "weapon": "Weapon",
     "player-stats": "Player Stats",
     "player-overmasteries": "Overmasteries",
+    "player-summons": "Summons",
     "select-enemy": "Select Enemy",
     "select-quest": "Select Quest",
     "select-player": "Select Player",
@@ -60,8 +59,8 @@
       "damage-description": "Total Damage",
       "damage-percentage": "%",
       "damage-percentage-description": "Total Damage in Percentage",
-      "damage-cap": "Cap",
-      "damage-cap-description": "Percentage of Hits at Damage Cap",
+      "sup-percentage": "Sup",
+      "sup-percentage-description": "Extra Damage from Supplementary/Echo Procs",
       "sba": "SBA",
       "sba-description": "Skybound Arts Gauge",
       "total-stun-value": "Stun",
@@ -71,6 +70,7 @@
     },
     "stats": {
       "level": "Level",
+      "master-level": "Master Level",
       "total-hp": "Total HP",
       "total-attack": "Total Attack",
       "critical-rate": "Critical Rate",
@@ -135,7 +135,8 @@
     "Pl2700": "Eustace",
     "Pl2800": "Fraux",
     "Pl2900": "Fediel",
-    "Unknown": "Unknown"
+    "Unknown": "Unknown",
+    "ai": "AI"
   },
   "skills": {
     "Pl0000": {
@@ -396,7 +397,9 @@
         "aerial-attack": "Aerial Attack",
         "detonator": "Detonator",
         "grenade": "Grenade"
-      }
+      },
+      "0": "TODO: Skill 0",
+      "800": "TODO: Skill 800"
     },
     "Pl0600": {
       "0": "Rose Palace",
@@ -433,7 +436,8 @@
         "rose-attack": "Rose Attack",
         "spiral-rose": "Spiral Rose",
         "lost-love": "Lost Love"
-      }
+      },
+      "100006": "TODO: Skill 100006"
     },
     "Pl0700": {
       "65": "Pets",
@@ -622,7 +626,8 @@
         "power-strike": "Power Strike",
         "aerial-attack": "Aerial Attack",
         "sword-of-lumiel": "Sword of Lumiel"
-      }
+      },
+      "800": "TODO: Skill 800"
     },
     "Pl1300": {
       "1": "Awakening",
@@ -775,7 +780,9 @@
         "loop-combo": "Loop Combo",
         "aerial-attack": "Aerial Attack",
         "realms-majesty": "Realm's Majesty"
-      }
+      },
+      "0": "TODO: Skill 0",
+      "800": "TODO: Skill 800"
     },
     "Pl1700": {
       "100": "Attack 1",
@@ -845,7 +852,9 @@
         "finisher": "Finisher",
         "enhanced-collapse": "Enhanced Collapse",
         "aerial-attack": "Aerial Attack"
-      }
+      },
+      "0": "TODO: Skill 0",
+      "800": "TODO: Skill 800"
     },
     "Pl1900": {
       "1": "Reginleiv Recidiv",
@@ -889,7 +898,8 @@
         "lunge": "Lunge",
         "power-strike": "Power Strike",
         "aerial-attack": "Aerial Attack"
-      }
+      },
+      "0": "TODO: Skill 0"
     },
     "Pl2000": {
       "0": "Light Blast (Enter Dragonform)",
@@ -921,7 +931,9 @@
       "skill-groups": {
         "normal-attack": "Normal Attack (Dragonform)",
         "aerial-attack": "Aerial Attack (Dragonform)"
-      }
+      },
+      "1010": "TODO: Skill 1010",
+      "1500": "TODO: Skill 1500"
     },
     "Pl2100": {
       "100": "Attack 1",
@@ -1072,6 +1084,43 @@
         "power-finisher": "Power Finisher",
         "aerial-attack": "Aerial Attack",
         "two-crown-strife": "Two-Crown's Strife"
+      },
+      "0": "TODO: Skill 0",
+      "800": "TODO: Skill 800"
+    },
+    "Pl2700": {
+      "120": "Grade 1 Shot",
+      "121": "Grade 2 Shot",
+      "122": "Grade 2 Shot",
+      "125": "Grade 3 Shot",
+      "130": "Grade 4 Shot",
+      "1700": "Heaven Comes Down",
+      "1110": "Forever Yours",
+      "110": "Strafe Shot",
+      "400": "Launch",
+      "300": "Aerial Grade 1 Shot",
+      "301": "Aerial Grade 2 Shot",
+      "304": "Aerial Grade 3 Shot",
+      "1601": "Flamek Thunder (Partially Charged)",
+      "1602": "Flamek Thunder (Charged)",
+      "1300": "Acidrage Howl (Missed Counter)",
+      "1310": "Acidrage Howl",
+      "1000": "Slow Kill (Uncharged - Melee)",
+      "1010": "Slow Kill (Uncharged)",
+      "1011": "Slow Kill (Charged)",
+      "111": "TODO: Skill 111",
+      "112": "TODO: Skill 112",
+      "115": "TODO: Skill 115",
+      "140": "TODO: Skill 140",
+      "100003": "TODO: Skill 100003",
+      "100006": "TODO: Skill 100006",
+      "100008": "TODO: Skill 100008",
+      "skill-groups": {
+        "normal-attack": "Normal Attack",
+        "aerial-attack": "Aerial Attack",
+        "flamek-thunder": "Flamek Thunder",
+        "acidrage-howl": "Acidrage Howl",
+        "slow-kill": "Slow Kill"
       }
     },
     "default": {
@@ -1084,6 +1133,131 @@
       "skybound-arts": "Skybound Arts",
       "damage-over-time": "Damage Over Time",
       "unknown-skill": "Skill {{id}}"
+    },
+    "Pl2400": {
+      "0": "TODO: Skill 0",
+      "100": "TODO: Skill 100",
+      "101": "TODO: Skill 101",
+      "102": "TODO: Skill 102",
+      "103": "TODO: Skill 103",
+      "104": "TODO: Skill 104",
+      "110": "TODO: Skill 110",
+      "111": "TODO: Skill 111",
+      "115": "TODO: Skill 115",
+      "116": "TODO: Skill 116",
+      "120": "TODO: Skill 120",
+      "125": "TODO: Skill 125",
+      "130": "TODO: Skill 130",
+      "140": "TODO: Skill 140",
+      "141": "TODO: Skill 141",
+      "142": "TODO: Skill 142",
+      "150": "TODO: Skill 150",
+      "200": "TODO: Skill 200",
+      "201": "TODO: Skill 201",
+      "202": "TODO: Skill 202",
+      "210": "TODO: Skill 210",
+      "211": "TODO: Skill 211",
+      "212": "TODO: Skill 212",
+      "220": "TODO: Skill 220",
+      "230": "TODO: Skill 230",
+      "232": "TODO: Skill 232",
+      "233": "TODO: Skill 233",
+      "300": "TODO: Skill 300",
+      "301": "TODO: Skill 301",
+      "302": "TODO: Skill 302",
+      "310": "TODO: Skill 310",
+      "400": "TODO: Skill 400",
+      "410": "TODO: Skill 410",
+      "1200": "TODO: Skill 1200",
+      "1500": "TODO: Skill 1500",
+      "1600": "TODO: Skill 1600",
+      "99999": "TODO: Skill 99999",
+      "100001": "TODO: Skill 100001",
+      "100003": "TODO: Skill 100003",
+      "100008": "TODO: Skill 100008",
+      "100009": "TODO: Skill 100009",
+      "100010": "TODO: Skill 100010"
+    },
+    "Pl0700Ghost": {
+      "200": "TODO: Skill 200",
+      "1100": "TODO: Skill 1100",
+      "1400": "TODO: Skill 1400",
+      "9995": "TODO: Skill 9995"
+    },
+    "Pl2500": {
+      "100": "TODO: Skill 100",
+      "101": "TODO: Skill 101",
+      "102": "TODO: Skill 102",
+      "200": "TODO: Skill 200",
+      "210": "TODO: Skill 210",
+      "220": "TODO: Skill 220",
+      "230": "TODO: Skill 230",
+      "1100": "TODO: Skill 1100",
+      "1200": "TODO: Skill 1200",
+      "1300": "TODO: Skill 1300",
+      "1500": "TODO: Skill 1500",
+      "9999": "TODO: Skill 9999"
+    },
+    "Pl2600": {
+      "100": "TODO: Skill 100",
+      "101": "TODO: Skill 101",
+      "102": "TODO: Skill 102",
+      "103": "TODO: Skill 103",
+      "110": "TODO: Skill 110",
+      "111": "TODO: Skill 111",
+      "120": "TODO: Skill 120",
+      "121": "TODO: Skill 121",
+      "140": "TODO: Skill 140",
+      "900": "TODO: Skill 900",
+      "921": "TODO: Skill 921",
+      "940": "TODO: Skill 940",
+      "960": "TODO: Skill 960",
+      "980": "TODO: Skill 980",
+      "1000": "TODO: Skill 1000",
+      "2000": "TODO: Skill 2000",
+      "6000": "TODO: Skill 6000"
+    },
+    "Pl2800": {
+      "100": "TODO: Skill 100",
+      "101": "TODO: Skill 101",
+      "102": "TODO: Skill 102",
+      "111": "TODO: Skill 111",
+      "150": "TODO: Skill 150",
+      "200": "TODO: Skill 200",
+      "900": "TODO: Skill 900",
+      "901": "TODO: Skill 901",
+      "902": "TODO: Skill 902",
+      "930": "TODO: Skill 930",
+      "931": "TODO: Skill 931",
+      "941": "TODO: Skill 941",
+      "1000": "TODO: Skill 1000",
+      "2000": "TODO: Skill 2000",
+      "4000": "TODO: Skill 4000"
+    },
+    "Pl2900": {
+      "100": "TODO: Skill 100",
+      "101": "TODO: Skill 101",
+      "102": "TODO: Skill 102",
+      "103": "TODO: Skill 103",
+      "110": "TODO: Skill 110",
+      "111": "TODO: Skill 111",
+      "112": "TODO: Skill 112",
+      "113": "TODO: Skill 113",
+      "150": "TODO: Skill 150",
+      "151": "TODO: Skill 151",
+      "152": "TODO: Skill 152",
+      "153": "TODO: Skill 153",
+      "220": "TODO: Skill 220",
+      "250": "TODO: Skill 250",
+      "260": "TODO: Skill 260",
+      "300": "TODO: Skill 300",
+      "301": "TODO: Skill 301",
+      "302": "TODO: Skill 302",
+      "950": "TODO: Skill 950",
+      "1000": "TODO: Skill 1000",
+      "2010": "TODO: Skill 2010",
+      "7000": "TODO: Skill 7000",
+      "8010": "TODO: Skill 8010"
     }
   },
   "enemies": {

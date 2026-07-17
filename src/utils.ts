@@ -15,7 +15,7 @@ import {
   SortType,
 } from "./types";
 
-import { t } from "i18next";
+import i18next, { t } from "i18next";
 import { useEffect, useRef } from "react";
 
 export const EMPTY_ID = 2289754288;
@@ -32,6 +32,60 @@ export const formatInPartyOrder = (party: Record<string, PlayerState>): Computed
     percentage: 0,
     ...player,
   }));
+};
+
+export const isSupplementaryAction = (actionType: SkillState["actionType"]): boolean =>
+  typeof actionType === "object" && Object.hasOwn(actionType, "SupplementaryDamage");
+
+/**
+ * Only Normal skill hits can trigger supplementary damage — Link Attacks, Skybound
+ * Arts and damage-over-time cannot. (Groups are frontend merges of Normal skills.)
+ */
+export const isSupEligibleAction = (actionType: SkillState["actionType"]): boolean =>
+  typeof actionType === "object" &&
+  (Object.hasOwn(actionType, "Normal") || Object.hasOwn(actionType, "Group"));
+
+export type SupPercentages = {
+  /** Supp damage relative to supp-eligible (Normal skill) damage — the proc-quality
+   * number. Each source procs at +20% of the trigger hit, so with all three equipped
+   * and a 100% proc rate this tops out at +60%. */
+  eligible: number;
+  /** Supp damage as a share of the player's total damage, ineligible sources
+   * (Link Attack, SBA, DoT) included. */
+  overall: number;
+};
+
+/**
+ * Extra damage from supplementary-type procs (sigil, Berserker/Spartan echo).
+ */
+export const computeSupPercentage = (player: PlayerState): SupPercentages => {
+  let suppDamage = 0;
+  let eligibleDamage = 0;
+  for (const skill of player.skillBreakdown) {
+    if (isSupplementaryAction(skill.actionType)) {
+      suppDamage += skill.totalDamage;
+    } else if (isSupEligibleAction(skill.actionType)) {
+      eligibleDamage += skill.totalDamage;
+    }
+  }
+
+  return {
+    eligible: eligibleDamage > 0 ? (suppDamage / eligibleDamage) * 100 : 0,
+    overall: player.totalDamage > 0 ? (suppDamage / player.totalDamage) * 100 : 0,
+  };
+};
+
+/**
+ * The game's overcap-display percentage: `(ΣbaseSum / ΣcapSum) * 100`, aggregated
+ * over cappable hits. A hit exactly at the cap contributes 100%, a hit twice the
+ * cap contributes 200%. Returns `null` when there were no cappable hits (nothing to
+ * divide by) so callers can render a placeholder instead of a bogus 0%.
+ */
+export const computeOvercapPercentage = (sums: { overcapBaseSum: number; overcapCapSum: number }): number | null => {
+  if (sums.overcapCapSum <= 0) {
+    return null;
+  }
+  return (sums.overcapBaseSum / sums.overcapCapSum) * 100;
 };
 
 export const epochToLocalTime = (epoch: number): string => {
@@ -142,6 +196,32 @@ export const exportScreenshotToClipboard = (selector = ".app") => {
   });
 };
 
+/// Translates a character type hash to its localized class name (e.g. "Cagliostro").
+export const translateCharacterType = (characterType: CharacterType): string =>
+  t(`characters:${characterType}`, `ui:characters.${characterType}`);
+
+/// Builds the `Name (CharacterType)` label shared by the meter and the equipment tab.
+///
+/// AI companions have their `displayName` blanked by the hook (their identity
+/// snapshot carries the LOCAL player's name, which isn't theirs), so an empty name
+/// on a resolved slot means "AI" — rendered as `CharacterType (AI)`. Real players
+/// (local or remote) always carry a name. When `showName` is off (streamer mode) we
+/// hide real names but must NOT mislabel them as AI, so the marker keys on the empty
+/// name, not on the toggle.
+export const formatCharacterLabel = (
+  characterType: CharacterType,
+  displayName: string,
+  showName: boolean = true
+): string => {
+  const type = translateCharacterType(characterType);
+
+  if (displayName === "") {
+    return `${type} (${t("ui:characters.ai")})`;
+  }
+
+  return showName ? `${displayName} (${type})` : type;
+};
+
 /// Formats the player name and translates the player's character type.
 export const translatedPlayerName = (
   partySlotIndex: number,
@@ -151,9 +231,9 @@ export const translatedPlayerName = (
 ) => {
   if (!player) return "Guest";
 
-  const characterType = t(`characters:${player.characterType}`, `ui:characters.${player.characterType}`);
-  const displayName = `${partySlotData?.displayName} (${characterType})`;
-  const name = show_display_names && partySlotData?.displayName ? displayName : characterType;
+  const name = partySlotData
+    ? formatCharacterLabel(player.characterType, partySlotData.displayName, show_display_names)
+    : translateCharacterType(player.characterType);
 
   return `[${partySlotData ? partySlotIndex + 1 : "Guest"}]` + " " + name;
 };
@@ -174,6 +254,10 @@ export const sortPlayers = (players: ComputedPlayerState[], sortType: SortType, 
       return sortDirection === "asc" ? a?.totalStunValue - b?.totalStunValue : b?.totalStunValue - a?.totalStunValue;
     } else if (sortType === MeterColumns.StunPerSecond) {
       return sortDirection === "asc" ? a?.stunPerSecond - b?.stunPerSecond : b?.stunPerSecond - a?.stunPerSecond;
+    } else if (sortType === MeterColumns.SupPercentage) {
+      return sortDirection === "asc"
+        ? computeSupPercentage(a).eligible - computeSupPercentage(b).eligible
+        : computeSupPercentage(b).eligible - computeSupPercentage(a).eligible;
     }
 
     return 0;
@@ -393,6 +477,52 @@ export const translateOvermasteryId = (id: number | null): string => {
   const hash = id.toString(16).padStart(8, "0");
 
   return t([`overmasteries:${hash}.text`, "ui.unknown"], { id: hash });
+};
+
+/// Translates the summon ID (summon table key) to a human-readable string.
+export const translateSummonId = (id: number | null): string => {
+  if (id === null) return "";
+  if (id === EMPTY_ID) return "";
+
+  const hash = id.toString(16).padStart(8, "0");
+  return t([`summons:${hash}.text`, "ui.unknown"], { id: hash });
+};
+
+/// Translates the summon equip-bonus ID (summon base-param key) to a human-readable string.
+export const translateSummonBonusId = (id: number | null): string => {
+  if (id === null) return "";
+  if (id === EMPTY_ID) return "";
+
+  const hash = id.toString(16).padStart(8, "0");
+  return t([`summon-bonuses:${hash}.text`, "ui.unknown"], { id: hash });
+};
+
+// Reverse index for translateWeaponKey, rebuilt when the language changes: the
+// hook reports the equipped weapon as its game KEY NAME (e.g. "WEP_PL2700_02_01"),
+// while the weapons bundle is keyed by hash — but each entry carries its `key`
+// name, so a scan over the bundle bridges the two without hashing.
+const weaponNameByKey = new Map<string, string>();
+let weaponNameByKeyLang: string | null = null;
+
+/// Translates a weapon key name (e.g. "WEP_PL2700_02_01") to a human-readable
+/// string, falling back to the raw key when no translation exists.
+export const translateWeaponKey = (key: string): string => {
+  if (!key) return "";
+  const lang = i18next.language || "en";
+  if (weaponNameByKeyLang !== lang) {
+    weaponNameByKey.clear();
+    weaponNameByKeyLang = lang;
+    // Active language first; en fills the gaps (matches i18next fallback).
+    for (const bundle of [i18next.getResourceBundle(lang, "weapons"), i18next.getResourceBundle("en", "weapons")]) {
+      if (!bundle) continue;
+      for (const entry of Object.values(bundle) as Array<{ key?: string; text?: string }>) {
+        if (entry?.key && entry?.text && !weaponNameByKey.has(entry.key)) {
+          weaponNameByKey.set(entry.key, entry.text);
+        }
+      }
+    }
+  }
+  return weaponNameByKey.get(key) ?? key;
 };
 
 /// Converts a number to a hexadecimal string.

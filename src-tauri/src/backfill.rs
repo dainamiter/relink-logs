@@ -121,6 +121,7 @@ mod tests {
             attack_rate: None,
             stun_value: None,
             damage_cap: None,
+            base_damage: None,
         }
     }
 

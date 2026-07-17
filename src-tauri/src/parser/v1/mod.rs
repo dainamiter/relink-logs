@@ -36,20 +36,10 @@ pub struct AdjustedDamageInstance<'a> {
 }
 
 impl<'a> AdjustedDamageInstance<'a> {
-    /// Build an instance using the simple cap rule (`damage >= cap`). Used by the
-    /// live single-pass path, which cannot yet know the encounter's crit multipliers.
+    /// Build an instance with exact cap detection from the game's pre-cap base
+    /// damage (`base > cap`). This is the single authority for `is_capped`; there
+    /// is no separate live-vs-history rule anymore.
     pub fn from_damage_event(event: &'a DamageEvent, player_data: Option<&'a PlayerData>) -> Self {
-        Self::from_damage_event_with_multipliers(event, player_data, &[])
-    }
-
-    /// Build an instance using crit-aware cap detection against the encounter's
-    /// learned crit multipliers. An empty slice falls back to the simple rule, so
-    /// this is the single authority for `is_capped`.
-    pub fn from_damage_event_with_multipliers(
-        event: &'a DamageEvent,
-        player_data: Option<&'a PlayerData>,
-        crit_multipliers: &[f64],
-    ) -> Self {
         let stun_damage = event.stun_value.unwrap_or(0.0) as f64;
 
         // Supplementary damage is never subject to the damage cap — the cap value it
@@ -60,8 +50,7 @@ impl<'a> AdjustedDamageInstance<'a> {
             protocol::ActionType::SupplementaryDamage(_)
         );
         let is_cappable = !is_supplementary && event.damage_cap.is_some_and(|cap| cap > 0);
-        let is_capped = is_cappable
-            && cap_detection::is_capped(event.damage, event.damage_cap, crit_multipliers);
+        let is_capped = is_cappable && cap_detection::is_capped(event.base_damage, event.damage_cap);
 
         Self {
             event,
@@ -216,6 +205,32 @@ struct Sigil {
     pub notification_enum: u32,
 }
 
+/// One equipped summon (v2.0.2 expansion: 4 account-level summons whose bonuses
+/// apply party-wide). `summon_id` keys the summon table, `main_trait_id` is a
+/// regular trait id (named by the `traits:` lang namespace), `bonus_id` keys the
+/// summon base-param table; `bonus_level` is 0-indexed (max 9).
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct EquippedSummon {
+    pub summon_id: u32,
+    pub main_trait_id: u32,
+    pub main_trait_level: u32,
+    pub bonus_id: u32,
+    pub bonus_level: u32,
+}
+
+impl From<protocol::EquippedSummon> for EquippedSummon {
+    fn from(summon: protocol::EquippedSummon) -> Self {
+        Self {
+            summon_id: summon.summon_id,
+            main_trait_id: summon.main_trait_id,
+            main_trait_level: summon.main_trait_level,
+            bonus_id: summon.bonus_id,
+            bonus_level: summon.bonus_level,
+        }
+    }
+}
+
 /// Data for a player in the encounter
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
@@ -230,6 +245,29 @@ pub struct PlayerData {
     character_type: CharacterType,
     /// Sigils that this player has equipped
     sigils: Vec<Sigil>,
+    /// The 4 equipped summons (account-level, party-wide bonuses). Empty on logs
+    /// recorded before summon recovery shipped; `#[serde(default)]` keeps those
+    /// stored logs readable.
+    #[serde(default)]
+    summons: Vec<EquippedSummon>,
+    /// The 4 equipped ability (skill) ids (`AB_PL####_##` hashes). Empty on
+    /// logs recorded before ability recovery shipped; `#[serde(default)]`
+    /// keeps those stored logs readable.
+    #[serde(default)]
+    abilities: Vec<u32>,
+    /// Equipped weapon as its full game key name (e.g. `WEP_PL2700_02_01`).
+    /// Empty when unresolved; `#[serde(default)]` keeps stored logs readable.
+    #[serde(default)]
+    weapon_key: String,
+    /// Master level, level+stars combined as the game stores it (55 = 50 + 5
+    /// stars). 0 when unknown; `#[serde(default)]` keeps stored logs readable.
+    #[serde(default)]
+    master_level: u32,
+    /// Unlocked skillboard (master trait) node effect ids. Empty on logs
+    /// recorded before skillboard recovery shipped; `#[serde(default)]` keeps
+    /// those stored logs readable.
+    #[serde(default)]
+    skillboard: Vec<u32>,
     /// Whether this player was an online player or not
     is_online: bool,
     /// Weapon info for this player
@@ -390,15 +428,6 @@ impl DerivedEncounterState {
             .max_by_key(|target| target.total_damage)
     }
 
-    /// Recount every player's capped hits against newly-learned crit multipliers,
-    /// converging the live single-pass counts to what the log-history reparse
-    /// computes from the same events.
-    fn reclassify_caps(&mut self, crit_multipliers: &[f64]) {
-        for player in self.party.values_mut() {
-            player.reclassify_caps(crit_multipliers);
-        }
-    }
-
     fn process_damage_event(&mut self, now: i64, damage_instance: &AdjustedDamageInstance) {
         self.end_time = now;
         self.total_damage += damage_instance.event.damage as u64;
@@ -426,6 +455,8 @@ impl DerivedEncounterState {
                 last_known_pet_skill: None,
                 capped_hits: 0,
                 cappable_hits: 0,
+                overcap_base_sum: 0.0,
+                overcap_cap_sum: 0.0,
             });
 
         // Update player stats from damage event.
@@ -518,10 +549,6 @@ pub struct Parser {
     /// The manager dtor rarely fires, so this is the primary "cleared" signal.
     #[serde(skip)]
     active_run_completed: bool,
-    /// Last time (ms) the live cap counters were recounted against freshly-learned
-    /// crit multipliers (see `on_damage_event` / `update_status`).
-    #[serde(skip)]
-    last_cap_reclassify: i64,
 }
 
 impl Parser {
@@ -563,29 +590,10 @@ impl Parser {
         Ok(Self::from_encounter(encounter))
     }
 
-    /// Learn the encounter's crit multipliers from all damage events (used for
-    /// crit-aware cap detection during reparse).
-    fn learn_crit_multipliers(&self) -> Vec<f64> {
-        let at_or_over = self.encounter.event_log().filter_map(|(_, event)| {
-            if let Message::DamageEvent(e) = event {
-                // Supplementary damage carries its trigger's cap but is itself uncapped;
-                // its damage/cap ratios are noise, not crit peaks (old logs recorded it).
-                if matches!(e.action_id, protocol::ActionType::SupplementaryDamage(_)) {
-                    return None;
-                }
-                e.damage_cap.map(|cap| (e.damage, cap))
-            } else {
-                None
-            }
-        });
-        cap_detection::learn_crit_multipliers(at_or_over)
-    }
-
     /// Reparses derived state from the current encounter.
     pub fn reparse(&mut self) {
         self.derived_state = Default::default();
         self.derived_state.start(self.start_time());
-        let crit_multipliers = self.learn_crit_multipliers();
 
         for (timestamp, event) in self.encounter.event_log() {
             self.derived_state.end_time = *timestamp;
@@ -601,11 +609,8 @@ impl Parser {
                         .flatten()
                         .find(|player| player.actor_index == event.source.parent_index);
 
-                    let damage_instance = AdjustedDamageInstance::from_damage_event_with_multipliers(
-                        &event,
-                        player_data,
-                        &crit_multipliers,
-                    );
+                    let damage_instance =
+                        AdjustedDamageInstance::from_damage_event(&event, player_data);
 
                     self.derived_state
                         .process_damage_event(*timestamp, &damage_instance);
@@ -619,7 +624,6 @@ impl Parser {
     pub fn reparse_with_options(&mut self, targets: &[EnemyType]) {
         self.derived_state = Default::default();
         self.derived_state.start(self.start_time());
-        let crit_multipliers = self.learn_crit_multipliers();
 
         for (timestamp, event) in self.encounter.event_log() {
             self.derived_state.end_time = *timestamp;
@@ -641,11 +645,7 @@ impl Parser {
                             .find(|player| player.actor_index == event.source.parent_index);
 
                         let damage_instance =
-                            AdjustedDamageInstance::from_damage_event_with_multipliers(
-                                &event,
-                                player_data,
-                                &crit_multipliers,
-                            );
+                            AdjustedDamageInstance::from_damage_event(&event, player_data);
 
                         self.derived_state
                             .process_damage_event(*timestamp, &damage_instance);
@@ -846,19 +846,6 @@ impl Parser {
         self.derived_state
             .process_damage_event(now, &damage_instance);
 
-        // Converge the live cap counters: the per-hit classification above used the
-        // simple damage>=cap rule, so periodically re-learn the encounter's crit
-        // multipliers and recount — otherwise the meter's Cap% disagrees with the
-        // log-history reparse of the same events. Throttled; update_status does a
-        // final pass when the encounter stops.
-        if now - self.last_cap_reclassify >= 1000 {
-            self.last_cap_reclassify = now;
-            let crit_multipliers = self.learn_crit_multipliers();
-            if !crit_multipliers.is_empty() {
-                self.derived_state.reclassify_caps(&crit_multipliers);
-            }
-        }
-
         if let Some(window) = &self.window_handle {
             let _ = window.emit("encounter-update", &self.derived_state);
         }
@@ -895,6 +882,11 @@ impl Parser {
             is_online: event.is_online,
             character_type,
             sigils,
+            summons: Vec::new(),
+            abilities: Vec::new(),
+            weapon_key: String::new(),
+            master_level: 0,
+            skillboard: Vec::new(),
             weapon_info: Some(event.weapon_info.into()),
             overmastery_info: Some(event.overmastery_info.into()),
             player_stats: Some(event.player_stats.into()),
@@ -929,6 +921,11 @@ impl Parser {
                 character_name: String::new(),
                 character_type,
                 sigils: Vec::new(),
+                summons: Vec::new(),
+                abilities: Vec::new(),
+                weapon_key: String::new(),
+                master_level: 0,
+                skillboard: Vec::new(),
                 is_online: event.is_online,
                 weapon_info: None,
                 overmastery_info: None,
@@ -939,6 +936,76 @@ impl Parser {
         player_data.character_name = event.character_name.to_string_lossy().to_string();
         player_data.character_type = character_type;
         player_data.is_online = event.is_online;
+
+        // Sigils recovered from the identity snapshot. Only overwrite when the event
+        // carries some, so an identity refresh without sigil data (or an older hook)
+        // can't wipe equipment learned from a full player-load event.
+        if !event.sigils.is_empty() {
+            player_data.sigils = event
+                .sigils
+                .into_iter()
+                .map(|sigil| Sigil {
+                    first_trait_id: sigil.first_trait_id,
+                    first_trait_level: sigil.first_trait_level,
+                    second_trait_id: sigil.second_trait_id,
+                    second_trait_level: sigil.second_trait_level,
+                    sigil_id: sigil.sigil_id,
+                    equipped_character: sigil.equipped_character,
+                    sigil_level: sigil.sigil_level,
+                    acquisition_count: sigil.acquisition_count,
+                    notification_enum: sigil.notification_enum,
+                })
+                .collect();
+        }
+
+        // Same only-overwrite-when-present rule as sigils: an identity refresh
+        // without summon data must not wipe a previously learned set.
+        if !event.summons.is_empty() {
+            player_data.summons = event.summons.into_iter().map(Into::into).collect();
+        }
+
+        // Overmasteries: the hook reads the record's inline block (in-quest, with
+        // computed `value`) and falls back to the town loadout pairs (`value` 0.0,
+        // rendered as "<name> (Lvl. N)"). Keep the last non-empty set (mirrors
+        // sigils) so a sparse refresh can't wipe a learned set.
+        if !event.overmasteries.is_empty() {
+            player_data.overmastery_info = Some(OvermasteryInfo {
+                overmasteries: event.overmasteries.into_iter().map(Into::into).collect(),
+            });
+        }
+
+        // Same only-overwrite-when-present rule for the remaining equipment
+        // fields, so a half-populated refresh (e.g. before the save finishes
+        // loading, or a remote player with no local save data) can't wipe
+        // previously learned values.
+        if !event.abilities.is_empty() {
+            player_data.abilities = event.abilities;
+        }
+        if !event.weapon_key.is_empty() {
+            player_data.weapon_key = event.weapon_key;
+        }
+        if event.master_level != 0 {
+            player_data.master_level = event.master_level;
+        }
+        if !event.skillboard.is_empty() {
+            player_data.skillboard = event.skillboard;
+        }
+
+        // Character level, also town-loadout-only. Fold it into player_stats without
+        // clobbering a fuller stats block a PlayerLoadEvent may have set: update just
+        // the level, defaulting the still-unrecovered v2.0.2 stat fields to 0.
+        if event.player_level != 0 {
+            let mut stats = player_data.player_stats.take().unwrap_or(PlayerStats {
+                level: 0,
+                total_hp: 0,
+                total_attack: 0,
+                stun_power: 0.0,
+                critical_rate: 0.0,
+                total_power: 0,
+            });
+            stats.level = event.player_level;
+            player_data.player_stats = Some(stats);
+        }
 
         self.insert_player_data(player_data, event.party_index);
     }
@@ -1058,14 +1125,6 @@ impl Parser {
     }
 
     fn update_status(&mut self, new_status: ParserStatus) {
-        // Encounter ending: final crit-aware recount so the frozen end-of-quest
-        // meter shows the same Cap% the log-history reparse will compute.
-        if new_status == ParserStatus::Stopped && self.status == ParserStatus::InProgress {
-            let crit_multipliers = self.learn_crit_multipliers();
-            if !crit_multipliers.is_empty() {
-                self.derived_state.reclassify_caps(&crit_multipliers);
-            }
-        }
         self.status = new_status;
         self.derived_state.status = new_status;
     }
@@ -1461,6 +1520,7 @@ mod tests {
             attack_rate: None,
             stun_value: None,
             damage_cap: None,
+            base_damage: None,
         }
     }
 
@@ -1638,6 +1698,14 @@ mod tests {
             party_index,
             actor_index,
             is_online,
+            sigils: Vec::new(),
+            summons: Vec::new(),
+            overmasteries: Vec::new(),
+            player_level: 0,
+            abilities: Vec::new(),
+            weapon_key: String::new(),
+            master_level: 0,
+            skillboard: Vec::new(),
         }
     }
 
@@ -1793,6 +1861,67 @@ mod tests {
     }
 
     #[test]
+    fn equipment_fields_persist_across_sparse_refresh() {
+        // v2.0.2 expansion equipment: abilities/weapon/master-level/skillboard
+        // arrive on a fully-resolved identity refresh; a later sparse refresh
+        // (save not yet loaded, or a remote player with no local save data)
+        // carries none and must not wipe the learned values.
+        let mut parser = parser_with_memory_db();
+
+        let mut full = identity_event("Manmoth", 0x8056ABCD, 0, 100, false);
+        full.abilities = vec![0x1111_2222, 0x3333_4444];
+        full.weapon_key = "WEP_PL2700_02_01".to_string();
+        full.master_level = 55;
+        full.skillboard = vec![0xAAAA_0001, 0xAAAA_0002, 0xAAAA_0003];
+        parser.on_player_identity_event(full);
+
+        // Sparse refresh: everything default.
+        parser.on_player_identity_event(identity_event("Manmoth", 0x8056ABCD, 0, 100, false));
+
+        let slot = parser.encounter.player_data[0].as_ref().unwrap();
+        assert_eq!(slot.abilities, vec![0x1111_2222, 0x3333_4444]);
+        assert_eq!(slot.weapon_key, "WEP_PL2700_02_01");
+        assert_eq!(slot.master_level, 55);
+        assert_eq!(slot.skillboard.len(), 3);
+    }
+
+    #[test]
+    fn town_overmasteries_and_level_persist_across_empty_inquest_refresh() {
+        // v2.0.2: overmasteries + level come from the town loadout, which is NULL
+        // in-quest — so an in-quest identity refresh carries none. The town-sighting
+        // values must survive that empty refresh (mirrors the sigil/summon merge).
+        let mut parser = parser_with_memory_db();
+
+        // Town refresh: id + level_bits (bit 6 -> level 7) and character level 100.
+        let mut town = identity_event("Manmoth", 0x8056ABCD, 0, 100, false);
+        town.overmasteries = vec![protocol::Overmastery {
+            id: 0x9A97C049,
+            flags: 0x40,
+            value: 0.0,
+        }];
+        town.player_level = 100;
+        parser.on_player_identity_event(town);
+
+        let slot = parser.encounter.player_data[0].as_ref().unwrap();
+        assert_eq!(slot.player_stats.as_ref().unwrap().level, 100);
+        let om = &slot.overmastery_info.as_ref().unwrap().overmasteries;
+        assert_eq!(om.len(), 1);
+        assert_eq!(om[0].id, 0x9A97C049);
+        assert_eq!(om[0].flags, 0x40);
+
+        // In-quest refresh for the same slot with no loadout data must NOT wipe them.
+        parser.on_player_identity_event(identity_event("Manmoth", 0x8056ABCD, 0, 100, false));
+
+        let slot = parser.encounter.player_data[0].as_ref().unwrap();
+        assert_eq!(slot.player_stats.as_ref().unwrap().level, 100);
+        assert_eq!(
+            slot.overmastery_info.as_ref().unwrap().overmasteries.len(),
+            1,
+            "town overmasteries survive an empty in-quest refresh"
+        );
+    }
+
+    #[test]
     fn repeated_room_enter_same_manager_is_one_run_not_many() {
         // Regression for the live bug: the reception dispatcher fires once PER ROOM, so
         // four room-enters with the SAME manager must produce ONE run, not four.
@@ -1840,31 +1969,29 @@ mod tests {
     }
 
     #[test]
-    fn live_cap_counts_converge_to_crit_aware_reparse() {
-        // The live meter classifies each hit with the simple damage>=cap rule (it
-        // can't know the encounter's crit multipliers up front), which over-counts
-        // uncapped crits landing between crit peaks. The log-history view reparses
-        // crit-aware, so the two disagreed (live 85% vs history 76% on the same
-        // rows). By quest end the live state must be recounted to match.
+    fn live_cap_counts_use_exact_base_over_cap() {
+        // Exact detection (base > cap) is correct per-hit with no learning phase, so
+        // the live counts are final immediately — no convergence pass at quest end.
+        // A hit is capped iff its pre-cap base exceeds the cap, regardless of the
+        // final (post-crit) damage number.
         let mut parser = parser_with_memory_db();
 
-        let cap_event = |damage: i32| {
+        let cap_event = |base: f32, skill: u32| {
             let mut e = a_damage_event();
-            e.damage = damage;
+            e.action_id = ActionType::Normal(skill);
+            e.damage = 1000; // final number is irrelevant to cap detection now
             e.damage_cap = Some(1000);
+            e.base_damage = Some(base);
             e
         };
 
-        // 50 hits exactly at the cap (x1.0 peak) + 50 capped crits (x1.2 peak).
-        for _ in 0..50 {
-            parser.on_damage_event(cap_event(1000));
-            parser.on_damage_event(cap_event(1200));
+        // 100 hits whose base exceeds the cap -> capped.
+        for i in 0..100u32 {
+            parser.on_damage_event(cap_event(1500.0, 1 + i % 2));
         }
-        // 10 uncapped crits over the cap but BETWEEN the peaks, each with a
-        // distinct ratio so none forms a learnable peak of its own. The simple
-        // rule counts these as capped; crit-aware detection must not.
-        for i in 0..10 {
-            parser.on_damage_event(cap_event(1015 + i * 17));
+        // 10 hits whose base is at or under the cap -> NOT capped (cappable though).
+        for _ in 0..10 {
+            parser.on_damage_event(cap_event(900.0, 1));
         }
 
         parser.on_quest_complete_event(protocol::QuestCompleteEvent {
@@ -1874,13 +2001,18 @@ mod tests {
 
         let player = parser.derived_state.party.get(&0).unwrap();
         assert_eq!(player.cappable_hits, 110, "denominator counts all capped-capable hits");
-        assert_eq!(
-            player.capped_hits, 100,
-            "between-peak uncapped crits recounted as not capped by quest end"
-        );
-        let skill = &player.skill_breakdown[0];
-        assert_eq!(skill.cappable_hits, 110);
-        assert_eq!(skill.capped_hits, 100);
+        assert_eq!(player.capped_hits, 100, "only base>cap hits count as capped");
+        let (skill_capped, skill_cappable) = player
+            .skill_breakdown
+            .iter()
+            .fold((0, 0), |acc, s| (acc.0 + s.capped_hits, acc.1 + s.cappable_hits));
+        assert_eq!(skill_cappable, 110);
+        assert_eq!(skill_capped, 100);
+
+        // Overcap %: 100 hits at base 1500/cap 1000 + 10 at 900/1000.
+        // Σbase = 100*1500 + 10*900 = 159_000; Σcap = 110*1000 = 110_000.
+        assert_eq!(player.overcap_base_sum, 159_000.0);
+        assert_eq!(player.overcap_cap_sum, 110_000.0);
     }
 
     #[test]
@@ -2006,6 +2138,7 @@ mod tests {
                 attack_rate: None,
                 stun_value: None,
                 damage_cap: None,
+                base_damage: None,
             }),
         ));
 
@@ -2037,6 +2170,7 @@ mod tests {
                 attack_rate: None,
                 stun_value: None,
                 damage_cap: None,
+                base_damage: None,
             }),
         ));
 
@@ -2061,6 +2195,7 @@ mod tests {
                 attack_rate: None,
                 stun_value: None,
                 damage_cap: None,
+                base_damage: None,
             }),
         ));
 
@@ -2097,6 +2232,7 @@ mod tests {
                 attack_rate: None,
                 stun_value: None,
                 damage_cap: Some(99_999),
+                base_damage: Some(200_000.0), // base > cap -> capped
             }),
         ));
 
@@ -2121,6 +2257,7 @@ mod tests {
                 attack_rate: None,
                 stun_value: None,
                 damage_cap: Some(99_999),
+                base_damage: Some(100.0), // base < cap -> not capped
             }),
         ));
 
@@ -2138,8 +2275,8 @@ mod tests {
     }
 
     #[test]
-    fn reparse_uses_crit_aware_cap_detection() {
-        fn dmg_event(damage: i32, cap: i32) -> DamageEvent {
+    fn reparse_uses_exact_base_over_cap_detection() {
+        fn dmg_event(base: f32, cap: i32, skill: u32) -> DamageEvent {
             DamageEvent {
                 source: Actor {
                     index: 0,
@@ -2153,45 +2290,43 @@ mod tests {
                     parent_actor_type: 0,
                     parent_index: 0,
                 },
-                damage,
+                damage: cap, // final number irrelevant to cap detection
                 flags: 0,
-                action_id: ActionType::Normal(1),
+                action_id: ActionType::Normal(skill),
                 attack_rate: None,
                 stun_value: None,
                 damage_cap: Some(cap),
+                base_damage: Some(base),
             }
         }
 
         let mut parser = Parser::default();
         let cap = 1000;
         let mut ts = 0i64;
-        let mut push = |parser: &mut Parser, damage: i32| {
+        let mut push = |parser: &mut Parser, base: f32, skill: u32| {
             ts += 1;
             parser
                 .encounter
                 .raw_event_log
-                .push((ts, Message::DamageEvent(dmg_event(damage, cap))));
+                .push((ts, Message::DamageEvent(dmg_event(base, cap, skill))));
         };
 
-        // Establish two clear crit multipliers: x1.0 (exactly capped) and x1.2.
-        for _ in 0..50 {
-            push(&mut parser, 1000); // x1.0  -> capped
-            push(&mut parser, 1200); // x1.2  -> capped (crit on capped base)
+        // 100 hits whose pre-cap base exceeds the cap -> capped.
+        for i in 0..100u32 {
+            push(&mut parser, 1500.0, 1 + i % 2);
         }
-        // One hit that exceeds the cap but lands BETWEEN the learned peaks (x1.1):
-        // an uncapped near-cap crit. The simple `damage >= cap` rule would count it;
-        // the crit-aware rule must NOT.
-        push(&mut parser, 1100);
+        // One hit whose base is exactly at the cap -> NOT over the cap.
+        push(&mut parser, 1000.0, 1);
 
         parser.reparse();
 
         let player = parser.derived_state.party.get(&0).expect("player present");
-        // 100 capped hits (50 at x1.0 + 50 at x1.2); the lone x1.1 hit is excluded.
-        assert_eq!(player.skill_breakdown[0].hits, 101);
-        assert_eq!(player.capped_hits, 100);
+        let total_hits: u32 = player.skill_breakdown.iter().map(|s| s.hits).sum();
+        assert_eq!(total_hits, 101);
+        assert_eq!(player.capped_hits, 100, "base==cap hit is not capped");
 
-        // Sanity: the simple rule WOULD have counted the x1.1 hit (proving the
-        // crit-aware path changed the outcome).
-        assert!(super::cap_detection::is_capped(1100, Some(1000), &[]));
+        // Overcap %: Σbase = 100*1500 + 1000 = 151_000; Σcap = 101*1000.
+        assert_eq!(player.overcap_base_sum, 151_000.0);
+        assert_eq!(player.overcap_cap_sum, 101_000.0);
     }
 }

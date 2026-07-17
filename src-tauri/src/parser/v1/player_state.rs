@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::parser::constants::{CharacterType, FerrySkillId};
 
-use super::{skill_state::ProcKind, skill_state::SkillState, AdjustedDamageInstance};
+use super::{skill_state::SkillState, AdjustedDamageInstance};
 
 /// Derived stat breakdown for a player
 #[derive(Debug, Serialize, Deserialize)]
@@ -18,13 +18,19 @@ pub struct PlayerState {
     pub sba: f64,
     pub total_stun_value: f64,
     pub stun_per_second: f64,
-    /// Number of hits by this player that reached the game's damage cap
+    /// Number of hits by this player that reached the game's damage cap (base > cap)
     pub capped_hits: u32,
     /// Number of hits that were subject to a damage cap at all — the denominator
     /// for the cap percentage. Cap-less sources (supplementary damage, DoT) are
     /// excluded so they can't dilute the percentage.
     #[serde(default)]
     pub cappable_hits: u32,
+    /// Sums over cappable hits that carried a pre-cap base, for the overcap %:
+    /// `(overcap_base_sum / overcap_cap_sum) * 100` (the game's own display value).
+    #[serde(default)]
+    pub overcap_base_sum: f64,
+    #[serde(default)]
+    pub overcap_cap_sum: f64,
 }
 
 impl PlayerState {
@@ -79,6 +85,15 @@ impl PlayerState {
     pub fn update_from_damage_event(&mut self, damage_instance: &AdjustedDamageInstance) {
         if damage_instance.is_cappable {
             self.cappable_hits += 1;
+            if let (Some(base), Some(cap)) = (
+                damage_instance.event.base_damage,
+                damage_instance.event.damage_cap,
+            ) {
+                if base.is_finite() && base > 0.0 && cap > 0 {
+                    self.overcap_base_sum += base as f64;
+                    self.overcap_cap_sum += cap as f64;
+                }
+            }
         }
         if damage_instance.is_capped {
             self.capped_hits += 1;
@@ -103,46 +118,18 @@ impl PlayerState {
             damage_instance.event.action_id
         };
 
-        // Supplementary-type procs: attribute to the skill row that triggered
-        // them (the proc carries the trigger's action id), then merge into the
-        // shared Supplementary Damage row as before. Classification is by
-        // damage ratio — the event stream has no other discriminator.
-        if let protocol::ActionType::SupplementaryDamage(trigger_aid) = action {
-            let event = damage_instance.event;
-            if let Some(idx) = self.skill_breakdown.iter().position(|s| {
-                s.action_type == ActionType::Normal(trigger_aid)
-                    && s.child_character_type == child_character_type
-            }) {
-                let row = &mut self.skill_breakdown[idx];
-                match row.classify_proc(event.damage, event.target.index, event.target.actor_type)
-                {
-                    ProcKind::Supplementary => {
-                        row.supp_hits += 1;
-                        row.supp_damage += event.damage as u64;
-                    }
-                    ProcKind::Echo => {
-                        row.echo_hits += 1;
-                        row.echo_damage += event.damage as u64;
-                    }
-                }
-            }
-
-            if let Some(merged) = self
-                .skill_breakdown
-                .iter_mut()
-                .find(|s| matches!(s.action_type, protocol::ActionType::SupplementaryDamage(_)))
-            {
-                merged.update_from_damage_event(damage_instance);
-            } else {
-                let mut skill = SkillState::new(action, child_character_type);
-                skill.update_from_damage_event(damage_instance);
-                self.skill_breakdown.push(skill);
-            }
-            return;
-        }
-
         // If the skill is already being tracked, update it.
         for skill in self.skill_breakdown.iter_mut() {
+            // Aggregate all supplementary damage events into the same skill instance.
+            if matches!(
+                skill.action_type,
+                protocol::ActionType::SupplementaryDamage(_)
+            ) && matches!(action, protocol::ActionType::SupplementaryDamage(_))
+            {
+                skill.update_from_damage_event(damage_instance);
+                return;
+            }
+
             // If the skill is already being tracked, update it.
             if skill.action_type == action && skill.child_character_type == child_character_type {
                 skill.update_from_damage_event(damage_instance);
@@ -155,18 +142,6 @@ impl PlayerState {
 
         skill.update_from_damage_event(damage_instance);
         self.skill_breakdown.push(skill);
-    }
-
-    /// Recount capped hits against newly-learned crit multipliers. Every damage
-    /// event increments the player counters and exactly one skill row, so the
-    /// player total is the sum of its skills.
-    pub fn reclassify_caps(&mut self, crit_multipliers: &[f64]) {
-        let mut capped = 0;
-        for skill in self.skill_breakdown.iter_mut() {
-            skill.reclassify_caps(crit_multipliers);
-            capped += skill.capped_hits;
-        }
-        self.capped_hits = capped;
     }
 }
 
@@ -190,6 +165,8 @@ mod tests {
             stun_per_second: 0.0,
             capped_hits: 0,
             cappable_hits: 0,
+            overcap_base_sum: 0.0,
+            overcap_cap_sum: 0.0,
         };
 
         player_state.update_dps(1000, 0);
@@ -211,6 +188,8 @@ mod tests {
             stun_per_second: 0.0,
             capped_hits: 0,
             cappable_hits: 0,
+            overcap_base_sum: 0.0,
+            overcap_cap_sum: 0.0,
         };
 
         let damage_event = DamageEvent {
@@ -232,6 +211,7 @@ mod tests {
             attack_rate: None,
             stun_value: None,
             damage_cap: None,
+            base_damage: None,
         };
 
         player_state.update_from_damage_event(&AdjustedDamageInstance::from_damage_event(
@@ -258,6 +238,8 @@ mod tests {
             stun_per_second: 0.0,
             capped_hits: 0,
             cappable_hits: 0,
+            overcap_base_sum: 0.0,
+            overcap_cap_sum: 0.0,
         };
 
         let damage_event = DamageEvent {
@@ -279,6 +261,7 @@ mod tests {
             attack_rate: None,
             stun_value: None,
             damage_cap: None,
+            base_damage: None,
         };
 
         player_state.update_from_damage_event(&AdjustedDamageInstance::from_damage_event(
@@ -313,6 +296,8 @@ mod tests {
             total_stun_value: 0.0,
             capped_hits: 0,
             cappable_hits: 0,
+            overcap_base_sum: 0.0,
+            overcap_cap_sum: 0.0,
         };
 
         let skill_one = DamageEvent {
@@ -334,6 +319,7 @@ mod tests {
             attack_rate: None,
             stun_value: None,
             damage_cap: None,
+            base_damage: None,
         };
 
         let skill_two = DamageEvent {
@@ -355,6 +341,7 @@ mod tests {
             attack_rate: None,
             stun_value: None,
             damage_cap: None,
+            base_damage: None,
         };
 
         player_state
@@ -384,6 +371,8 @@ mod tests {
             total_stun_value: 0.0,
             capped_hits: 0,
             cappable_hits: 0,
+            overcap_base_sum: 0.0,
+            overcap_cap_sum: 0.0,
         };
 
         let parent_skill = DamageEvent {
@@ -405,6 +394,7 @@ mod tests {
             attack_rate: None,
             stun_value: None,
             damage_cap: None,
+            base_damage: None,
         };
 
         let child_skill = DamageEvent {
@@ -426,6 +416,7 @@ mod tests {
             attack_rate: None,
             stun_value: None,
             damage_cap: None,
+            base_damage: None,
         };
 
         player_state.update_from_damage_event(&AdjustedDamageInstance::from_damage_event(
@@ -461,6 +452,8 @@ mod tests {
             stun_per_second: 0.0,
             capped_hits: 0,
             cappable_hits: 0,
+            overcap_base_sum: 0.0,
+            overcap_cap_sum: 0.0,
         };
 
         let damage_event = DamageEvent {
@@ -482,6 +475,7 @@ mod tests {
             attack_rate: None,
             stun_value: Some(5.0),
             damage_cap: None,
+            base_damage: None,
         };
 
         let player_data = PlayerData {
@@ -490,6 +484,11 @@ mod tests {
             display_name: "Test".to_string(),
             character_name: "Test".to_string(),
             sigils: Vec::new(),
+            summons: Vec::new(),
+            abilities: Vec::new(),
+            weapon_key: String::new(),
+            master_level: 0,
+            skillboard: Vec::new(),
             is_online: false,
             weapon_info: None,
             overmastery_info: None,
@@ -525,6 +524,8 @@ mod tests {
             stun_per_second: 0.0,
             capped_hits: 0,
             cappable_hits: 0,
+            overcap_base_sum: 0.0,
+            overcap_cap_sum: 0.0,
         };
 
         let damage_event = DamageEvent {
@@ -546,6 +547,7 @@ mod tests {
             attack_rate: None,
             stun_value: Some(5.0),
             damage_cap: None,
+            base_damage: None,
         };
 
         player_state.update_from_damage_event(&AdjustedDamageInstance::from_damage_event(
@@ -576,6 +578,7 @@ mod tests {
             attack_rate: None,
             stun_value: None,
             damage_cap: Some(22_999),
+            base_damage: Some(40_000.0), // base > cap -> capped
         }
     }
 
@@ -599,6 +602,7 @@ mod tests {
             attack_rate: None,
             stun_value: None,
             damage_cap: Some(22_999),
+            base_damage: Some(100.0), // base < cap -> not capped
         }
     }
 
@@ -616,6 +620,8 @@ mod tests {
             stun_per_second: 0.0,
             capped_hits: 0,
             cappable_hits: 0,
+            overcap_base_sum: 0.0,
+            overcap_cap_sum: 0.0,
         };
 
         // Two capped hits on the same skill (exercises the early-return path),
@@ -652,6 +658,8 @@ mod tests {
             stun_per_second: 0.0,
             capped_hits: 0,
             cappable_hits: 0,
+            overcap_base_sum: 0.0,
+            overcap_cap_sum: 0.0,
         }
     }
 
@@ -675,6 +683,7 @@ mod tests {
             attack_rate: None,
             stun_value: None,
             damage_cap: None,
+            base_damage: None,
         }
     }
 
@@ -683,101 +692,20 @@ mod tests {
     }
 
     #[test]
-    fn supplementary_proc_attributes_to_trigger_skill() {
+    fn supplementary_events_merge_into_single_row() {
         let mut player = empty_player();
         apply(&mut player, &plain_event(ActionType::Normal(1), 1000));
+        // Different trigger action ids, same merged row.
         apply(
             &mut player,
             &plain_event(ActionType::SupplementaryDamage(1), 200),
         );
-
-        let trigger = player
-            .skill_breakdown
-            .iter()
-            .find(|s| s.action_type == ActionType::Normal(1))
-            .unwrap();
-        assert_eq!(trigger.supp_hits, 1);
-        assert_eq!(trigger.supp_damage, 200);
-        assert_eq!(trigger.echo_hits, 0);
-        // The trigger row's own hit stats are untouched by the proc.
-        assert_eq!(trigger.hits, 1);
-        assert_eq!(trigger.total_damage, 1000);
-
-        // The merged Supplementary Damage row still aggregates as before.
-        let merged = player
-            .skill_breakdown
-            .iter()
-            .find(|s| matches!(s.action_type, ActionType::SupplementaryDamage(_)))
-            .unwrap();
-        assert_eq!(merged.hits, 1);
-        assert_eq!(merged.total_damage, 200);
-        assert_eq!(player.total_damage, 1200);
-    }
-
-    #[test]
-    fn echo_proc_classified_by_ratio() {
-        let mut player = empty_player();
-        apply(&mut player, &plain_event(ActionType::Normal(1), 1000));
         apply(
             &mut player,
-            &plain_event(ActionType::SupplementaryDamage(1), 400),
+            &plain_event(ActionType::SupplementaryDamage(99), 800),
         );
 
-        let trigger = player
-            .skill_breakdown
-            .iter()
-            .find(|s| s.action_type == ActionType::Normal(1))
-            .unwrap();
-        assert_eq!(trigger.echo_hits, 1);
-        assert_eq!(trigger.echo_damage, 400);
-        assert_eq!(trigger.supp_hits, 0);
-    }
-
-    #[test]
-    fn proc_without_matching_skill_row_only_merges() {
-        let mut player = empty_player();
-        apply(
-            &mut player,
-            &plain_event(ActionType::SupplementaryDamage(99), 200),
-        );
-
-        // Only the merged row exists; nothing was attributed anywhere.
-        assert_eq!(player.skill_breakdown.len(), 1);
-        let merged = &player.skill_breakdown[0];
-        assert!(matches!(
-            merged.action_type,
-            ActionType::SupplementaryDamage(_)
-        ));
-        assert_eq!(merged.total_damage, 200);
-        assert_eq!(merged.supp_hits, 0);
-        assert_eq!(merged.echo_hits, 0);
-    }
-
-    #[test]
-    fn multiple_procs_accumulate() {
-        let mut player = empty_player();
-        apply(&mut player, &plain_event(ActionType::Normal(1), 1000));
-        apply(
-            &mut player,
-            &plain_event(ActionType::SupplementaryDamage(1), 200),
-        );
-        apply(&mut player, &plain_event(ActionType::Normal(1), 2000));
-        apply(
-            &mut player,
-            &plain_event(ActionType::SupplementaryDamage(1), 800),
-        );
-
-        let trigger = player
-            .skill_breakdown
-            .iter()
-            .find(|s| s.action_type == ActionType::Normal(1))
-            .unwrap();
-        // 200/1000 = 0.2 -> supp; 800/2000 = 0.4 -> echo.
-        assert_eq!(trigger.supp_hits, 1);
-        assert_eq!(trigger.supp_damage, 200);
-        assert_eq!(trigger.echo_hits, 1);
-        assert_eq!(trigger.echo_damage, 800);
-        // Merged row got both procs.
+        assert_eq!(player.skill_breakdown.len(), 2);
         let merged = player
             .skill_breakdown
             .iter()
@@ -785,5 +713,6 @@ mod tests {
             .unwrap();
         assert_eq!(merged.hits, 2);
         assert_eq!(merged.total_damage, 1000);
+        assert_eq!(player.total_damage, 2000);
     }
 }

@@ -56,25 +56,15 @@ export type SkillState = {
   cappedHits: number;
   /** Number of hits that were subject to a damage cap at all (cap-less sources like supplementary damage excluded) */
   cappableHits: number;
-  /** Procs classified as Supplementary (~0.2x their trigger hit) */
-  suppHits: number;
-  /** Procs classified as Echo (~0.4x their trigger hit) */
-  echoHits: number;
-  /** Damage from Supplementary procs attributed to this skill */
-  suppDamage: number;
-  /** Damage from Echo procs attributed to this skill */
-  echoDamage: number;
+  /** Sum of pre-cap base damage over cappable hits (for overcap %: baseSum/capSum*100) */
+  overcapBaseSum: number;
+  /** Sum of damage caps over cappable hits */
+  overcapCapSum: number;
 };
 
 export type ComputedSkillState = SkillState & {
   /** Damage contribution as a percentage of the total */
   percentage: number;
-  /** Damage shown in the Total column — own damage, plus proc damage when the merge toggle is on */
-  totalDisplayDamage: number;
-  /** Supp proc damage as a percentage of the player total (0 when merge is off) */
-  suppPercentage: number;
-  /** Echo proc damage as a percentage of the player total (0 when merge is off) */
-  echoPercentage: number;
 };
 
 export type ComputedSkillGroup = {
@@ -102,20 +92,10 @@ export type ComputedSkillGroup = {
   cappedHits: number;
   /** Number of cappable hits (summed over grouped skills) */
   cappableHits: number;
-  /** Procs classified as Supplementary across the group */
-  suppHits: number;
-  /** Procs classified as Echo across the group */
-  echoHits: number;
-  /** Supplementary proc damage across the group */
-  suppDamage: number;
-  /** Echo proc damage across the group */
-  echoDamage: number;
-  /** Damage shown in the Total column — own + proc damage when the merge toggle is on */
-  totalDisplayDamage: number;
-  /** Supp proc damage as a percentage of the player total (0 when merge is off) */
-  suppPercentage: number;
-  /** Echo proc damage as a percentage of the player total (0 when merge is off) */
-  echoPercentage: number;
+  /** Sum of pre-cap base damage over cappable hits (summed over grouped skills) */
+  overcapBaseSum: number;
+  /** Sum of damage caps over cappable hits (summed over grouped skills) */
+  overcapCapSum: number;
 };
 
 export type PlayerState = {
@@ -141,6 +121,10 @@ export type PlayerState = {
   cappedHits: number;
   /** Number of hits by this player that were subject to a damage cap at all */
   cappableHits: number;
+  /** Sum of pre-cap base damage over cappable hits (for overcap %: baseSum/capSum*100) */
+  overcapBaseSum: number;
+  /** Sum of damage caps over cappable hits */
+  overcapCapSum: number;
 };
 
 export type ComputedPlayerState = PlayerState & {
@@ -236,12 +220,29 @@ export type PlayerStats = {
   totalPower: number;
 };
 
+export type EquippedSummon = {
+  summonId: number;
+  mainTraitId: number;
+  mainTraitLevel: number;
+  bonusId: number;
+  bonusLevel: number;
+};
+
 export type PlayerData = {
   actorIndex: number;
   displayName: string;
   characterName: string;
   characterType: CharacterType;
   sigils: Sigil[];
+  summons: EquippedSummon[];
+  /** The 4 equipped ability (skill) id hashes; empty on logs from older versions. */
+  abilities: number[];
+  /** Equipped weapon as its game key name (e.g. "WEP_PL2700_02_01"); "" when unknown. */
+  weaponKey: string;
+  /** Master level, level+stars combined (55 = 50 + 5 stars); 0 when unknown. */
+  masterLevel: number;
+  /** Unlocked skillboard (master trait) node effect ids; empty on older logs. */
+  skillboard: number[];
   isOnline: boolean;
   weaponInfo: WeaponInfo | null;
   overmasteryInfo: OvermasteryInfo | null;
@@ -257,7 +258,7 @@ export enum MeterColumns {
   Name = "name",
   DPS = "dps",
   TotalDamage = "damage",
-  DamageCap = "damage-cap",
+  SupPercentage = "sup-percentage",
   DamagePercentage = "damage-percentage",
   SBA = "sba",
   TotalStunValue = "total-stun-value",

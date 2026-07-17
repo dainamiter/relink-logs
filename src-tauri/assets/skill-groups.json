@@ -415,5 +415,22 @@
     "two-crown-strife": {
       "skills": [1700, 1701]
     }
+  },
+  "Pl2700": {
+    "normal-attack": {
+      "skills": [120,121,122,125,130]
+    },
+    "aerial-attack": {
+      "skills": [300,301,304]
+    },
+    "flamek-thunder": {
+      "skills": [1601,1602]
+    },
+    "acidrage-howl": {
+      "skills": [1300,1310]
+    },
+    "slow-kill": {
+      "skills": [1000,1010,1011]
+    }
   }
 }

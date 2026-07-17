@@ -32,6 +32,8 @@ pub struct DamageInstance {
     pub action_id: u32,     // 0x16C
     padding_170: [u8; 0x14C], // 0x170 - 0x2BC
     pub damage_cap: i32,    // 0x2BC
+    padding_2c0: [u8; 0x14], // 0x2C0 - 0x2D4
+    pub base_damage: f32,   // 0x2D4 pre-cap base damage (uncapped); capped <=> base > cap
 }
 
 #[derive(Debug)]

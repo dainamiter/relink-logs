@@ -3,7 +3,7 @@ import { useShallow } from "zustand/react/shallow";
 
 import { useMeterSettingsStore } from "@/stores/useMeterSettingsStore";
 import { ComputedPlayerState, MeterColumns, PlayerData } from "@/types";
-import { humanizeNumbers } from "@/utils";
+import { computeSupPercentage, humanizeNumbers } from "@/utils";
 
 export type ColumnValue = {
   value: string | number;
@@ -41,10 +41,9 @@ export const usePlayerRow = (live: boolean, player: ComputedPlayerState, partyDa
   const [dps, dpsUnit] = humanizeNumbers(player.dps);
   const [totalStunValue, totalStunValueUnit] = humanizeNumbers(player.totalStunValue);
 
-  // Percentage of this player's cap-eligible hits that reached the game's damage cap.
-  // Cap-less sources (e.g. supplementary damage) are excluded from the denominator so
-  // they don't dilute the percentage.
-  const damageCapPercentage = player.cappableHits > 0 ? (player.cappedHits / player.cappableHits) * 100 : 0;
+  // Extra damage gained from supplementary-type procs (sigil + echoes): +0% to +60%
+  // of supp-eligible damage, with the share of total damage as the secondary figure.
+  const supPercentage = computeSupPercentage(player);
 
   // Function for matching the column type to the value to display in the table.
   const matchColumnTypeToValue = (showFullValues: boolean, column: MeterColumns): ColumnValue => {
@@ -57,8 +56,11 @@ export const usePlayerRow = (live: boolean, player: ComputedPlayerState, partyDa
         return showFullValues ? { value: (player.dps || 0).toLocaleString() } : { value: dps, unit: dpsUnit };
       case MeterColumns.DamagePercentage:
         return { value: (player.percentage || 0).toFixed(0), unit: "%" };
-      case MeterColumns.DamageCap:
-        return { value: damageCapPercentage.toFixed(0), unit: "%" };
+      case MeterColumns.SupPercentage:
+        return {
+          value: `+${supPercentage.eligible.toFixed(0)}`,
+          unit: `% (+${supPercentage.overall.toFixed(0)}%)`,
+        };
       case MeterColumns.SBA:
         return showFullValues
           ? { value: (player.sba / 10).toFixed(2) }
@@ -82,7 +84,7 @@ export const usePlayerRow = (live: boolean, player: ComputedPlayerState, partyDa
         MeterColumns.DPS,
         MeterColumns.TotalStunValue,
         MeterColumns.StunPerSecond,
-        MeterColumns.DamageCap,
+        MeterColumns.SupPercentage,
         MeterColumns.DamagePercentage,
       ];
 

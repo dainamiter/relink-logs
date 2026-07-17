@@ -294,6 +294,15 @@ impl OnProcessDamageHook {
                 .then_some(damage_instance.damage_cap)
         };
 
+        // Pre-cap base damage (game's DamageInstance +0x2D4). Only meaningful alongside a
+        // real cap, so send it only for cappable hits — the parser uses base > cap for exact
+        // cap detection and (base/cap)*100 for the game's overcap %. Guard against garbage
+        // (NaN/inf/negative) so a shifted offset after a future patch can't poison the parser.
+        let base_damage = damage_cap.and_then(|_| {
+            let b = damage_instance.base_damage;
+            (b.is_finite() && b > 0.0).then_some(b)
+        });
+
         let event = Message::DamageEvent(DamageEvent {
             source: Actor {
                 index: source_idx,
@@ -313,6 +322,7 @@ impl OnProcessDamageHook {
             attack_rate: Some(damage_instance.attack_rate),
             damage_cap,
             stun_value,
+            base_damage,
         });
 
         let _ = self.tx.send(event);
@@ -417,6 +427,7 @@ impl OnProcessDotHook {
             attack_rate: None,
             stun_value: None,
             damage_cap: None,
+            base_damage: None,
         });
 
         let _ = self.tx.send(event);

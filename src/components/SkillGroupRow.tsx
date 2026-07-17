@@ -1,5 +1,5 @@
 import { CharacterType, ComputedSkillGroup } from "@/types";
-import { getSkillName } from "@/utils";
+import { computeOvercapPercentage, getSkillName } from "@/utils";
 import { CaretDown, CaretUp } from "@phosphor-icons/react";
 import { SkillRow } from "./SkillRow";
 import { useSkillGroupRow } from "./useSkillGroupRow";
@@ -13,8 +13,6 @@ export type SkillRowProps = {
 export const SkillGroupRow = ({ characterType, group, color }: SkillRowProps) => {
   const {
     showFullValues,
-    mergeSupplementary,
-    rawTotalDamage,
     totalDamage,
     totalDamageUnit,
     minDmg,
@@ -24,15 +22,12 @@ export const SkillGroupRow = ({ characterType, group, color }: SkillRowProps) =>
     rawAverageDmg,
     averageDmg,
     averageDmgUnit,
-    suppDmg,
-    suppDmgUnit,
-    echoDmg,
-    echoDmgUnit,
-    ownPercentage,
     expanded,
     setExpanded,
     sortedSkills,
   } = useSkillGroupRow(group);
+
+  const overcapPercentage = computeOvercapPercentage(group);
 
   return (
     <>
@@ -44,7 +39,7 @@ export const SkillGroupRow = ({ characterType, group, color }: SkillRowProps) =>
         <td className="text-center row-data">{group.hits}</td>
         <td className="text-center row-data">
           {showFullValues ? (
-            rawTotalDamage.toLocaleString()
+            group.totalDamage.toLocaleString()
           ) : (
             <>
               {totalDamage}
@@ -90,79 +85,21 @@ export const SkillGroupRow = ({ characterType, group, color }: SkillRowProps) =>
             </>
           )}
         </td>
-        {mergeSupplementary && (
-          <td className="text-center row-data">
-            {group.suppDamage > 0 ? (
-              showFullValues ? (
-                group.suppDamage.toLocaleString()
-              ) : (
-                <>
-                  {suppDmg}
-                  <span className="unit font-sm">{suppDmgUnit}</span>
-                </>
-              )
-            ) : (
-              ""
-            )}
-          </td>
-        )}
         <td className="text-center row-data">
-          {group.hits > 0 ? ((group.suppHits / group.hits) * 100).toFixed(0) : 0}
-          <span className="font-sm">%</span>
-        </td>
-        {mergeSupplementary && (
-          <td className="text-center row-data">
-            {group.echoDamage > 0 ? (
-              showFullValues ? (
-                group.echoDamage.toLocaleString()
-              ) : (
-                <>
-                  {echoDmg}
-                  <span className="unit font-sm">{echoDmgUnit}</span>
-                </>
-              )
-            ) : (
-              ""
-            )}
-          </td>
-        )}
-        <td className="text-center row-data">
-          {group.hits > 0 ? ((group.echoHits / group.hits) * 100).toFixed(0) : 0}
-          <span className="font-sm">%</span>
-        </td>
-        <td className="text-center row-data">
-          {group.cappedHits > 0 && group.cappableHits > 0 ? (
+          {overcapPercentage === null ? (
+            <>-</>
+          ) : (
             <span className="capped">
-              {((group.cappedHits / group.cappableHits) * 100).toFixed(0)}
+              {overcapPercentage.toFixed(0)}
               <span className="font-sm">%</span>
             </span>
-          ) : (
-            <>
-              0<span className="font-sm">%</span>
-            </>
           )}
         </td>
         <td className="text-center row-data">
           {group.percentage.toFixed(0)}
           <span className="unit font-sm">%</span>
         </td>
-        <div className="damage-bar" style={{ backgroundColor: color, width: `${ownPercentage}%` }} />
-        {(group.suppPercentage ?? 0) > 0 && (
-          <div
-            className="damage-bar damage-bar-supp"
-            style={{ backgroundColor: color, left: `${ownPercentage}%`, width: `${group.suppPercentage}%` }}
-          />
-        )}
-        {(group.echoPercentage ?? 0) > 0 && (
-          <div
-            className="damage-bar damage-bar-echo"
-            style={{
-              backgroundColor: color,
-              left: `${ownPercentage + (group.suppPercentage ?? 0)}%`,
-              width: `${group.echoPercentage}%`,
-            }}
-          />
-        )}
+        <div className="damage-bar" style={{ backgroundColor: color, width: `${group.percentage}%` }} />
       </tr>
       {expanded &&
         sortedSkills.map((skill) => (

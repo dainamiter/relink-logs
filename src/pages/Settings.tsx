@@ -35,7 +35,6 @@ const SettingsPage = () => {
     streamer_mode,
     show_full_values,
     use_condensed_skills,
-    merge_supplementary,
     setMeterSettings,
     languages,
     handleLanguageChange,
@@ -125,13 +124,6 @@ const SettingsPage = () => {
               label={t("ui.use-condensed-skills")}
               checked={use_condensed_skills}
               onChange={(event) => setMeterSettings({ use_condensed_skills: event.currentTarget.checked })}
-            />
-          </Tooltip>
-          <Tooltip label={t("ui.merge-supplementary-description")}>
-            <Checkbox
-              label={t("ui.merge-supplementary")}
-              checked={merge_supplementary}
-              onChange={(event) => setMeterSettings({ merge_supplementary: event.currentTarget.checked })}
             />
           </Tooltip>
           <Tooltip label={t("ui.open-log-on-save-description")}>

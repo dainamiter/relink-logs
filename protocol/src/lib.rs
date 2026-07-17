@@ -79,6 +79,11 @@ pub struct DamageEvent {
     pub attack_rate: Option<f32>,
     pub stun_value: Option<f32>,
     pub damage_cap: Option<i32>,
+    /// Pre-cap base damage (the value before `min(base, cap)` clamps it), read
+    /// from the game's DamageInstance (+0x2D4, v2.0.2). `None` on old logs and on
+    /// hooks that don't provide it. Lets the parser compute exact cap detection
+    /// (`base > cap`) and the game's overcap %: `(base / cap) * 100`.
+    pub base_damage: Option<f32>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -92,6 +97,20 @@ pub struct Sigil {
     pub sigil_level: u32,
     pub acquisition_count: u32,
     pub notification_enum: u32,
+}
+
+/// One equipped summon, read from the player record (v2.0.2 expansion: 4
+/// account-level summons whose bonuses apply party-wide). Ids are game hashes:
+/// `summon_id` keys `summon.tbl`, `main_trait_id` is an ordinary trait id (the
+/// `traits:` lang namespace names it), `bonus_id` keys `summon_base_param.tbl`.
+/// `bonus_level` is 0-indexed against that table's ten LevelNValue columns.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct EquippedSummon {
+    pub summon_id: u32,
+    pub main_trait_id: u32,
+    pub main_trait_level: u32,
+    pub bonus_id: u32,
+    pub bonus_level: u32,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -182,6 +201,65 @@ pub struct PlayerIdentityEvent {
     pub party_index: u8,
     pub actor_index: u32,
     pub is_online: bool,
+    /// Equipped sigils recovered from the identity snapshot (v2.0.2+: the snapshot
+    /// leads with 13 sigil entries). Empty when the snapshot carried no resolvable
+    /// sigil data; `#[serde(default)]` keeps pre-existing stored logs readable.
+    #[serde(default)]
+    pub sigils: Vec<Sigil>,
+    /// The 4 equipped summons read inline from the player record (+0x5DD8,
+    /// live-verified 2026-07-17). Account-level — every record of a local party
+    /// carries the same set. Empty for records with no populated slots;
+    /// `#[serde(default)]` keeps pre-existing stored logs readable.
+    #[serde(default)]
+    pub summons: Vec<EquippedSummon>,
+    /// The 4 equipped overmasteries. Primary source is the record's inline block
+    /// (`record+0x58B8`, 4 × `{u32 id, u32 level_bits, u32 effect_idx, f32 value}`,
+    /// live-verified 2026-07-17) which populates in-quest for every party slot and
+    /// carries the computed magnitude in [`Overmastery::value`]; when that block is
+    /// still sentinel-empty the town loadout pairs (`*(record+0x5DC8)+0x3208`,
+    /// id+level only, `value` 0.0) stand in. `level_bits` is a single-bit flag:
+    /// bit N → level N+1 (max bit 9 = level 10); carried in [`Overmastery::flags`].
+    /// `#[serde(default)]` keeps pre-existing stored logs readable.
+    #[serde(default)]
+    pub overmasteries: Vec<Overmastery>,
+    /// Character level: the record's level input (`record+0x5B44`, populated
+    /// in-quest) with the town loadout (`*(record+0x5DC8)+0x3530`) as fallback.
+    /// 0 when unavailable; `#[serde(default)]` keeps pre-existing stored logs
+    /// readable.
+    #[serde(default)]
+    pub player_level: u32,
+    /// The 4 equipped ability (skill) ids inline in the record
+    /// (`record+0x5AF4..0x5B04`, live-verified 2026-07-17). Values are game
+    /// hashes of `AB_PL####_##` action names. Empty when unpopulated;
+    /// `#[serde(default)]` keeps pre-existing stored logs readable.
+    #[serde(default)]
+    pub abilities: Vec<u32>,
+    /// Equipped weapon identity as the full game key name, e.g.
+    /// `WEP_PL2700_02_01` (weapon.tbl `Key`). Resolved by walking the
+    /// charid-keyed equipped-state map in the save root (`*(DAT_147c24980)`,
+    /// map header +0x40/+0x50/+0x68; entry+0x00 holds the id as 0x10-byte
+    /// ASCII "PPPP_WW_UU", live-verified 2026-07-17). Empty when the record's
+    /// charid has no entry; `#[serde(default)]` keeps stored logs readable.
+    #[serde(default)]
+    pub weapon_key: String,
+    /// Master level, combined level+stars as the game stores it
+    /// (`record+0x5B60`; 55 = level 50 + 5 stars, live-verified for the local
+    /// player — AI companion records read 0). `#[serde(default)]` keeps
+    /// pre-existing stored logs readable.
+    #[serde(default)]
+    pub master_level: u32,
+    /// Unlocked skillboard (master trait) node effect ids. Reimplements the
+    /// game's own query (`FUN_140297bc0`, decompiled 2026-07-17): CharaPower
+    /// (`*(DAT_147c24a78)`) maps charid → node-key vector (map header
+    /// +0x728/+0x738/+0x750); each key resolves through the node map
+    /// (+0x330/+0x348/+0x320) to a row whose unlock bit (`row+0x5C`) is tested
+    /// against the record's inline 400×0x38 `{id, bits}` array at
+    /// `record+0x138`; unlocked rows contribute `row+0x74` (the same id space
+    /// as the network profile blob's 50-id list). Empty when CharaPower has no
+    /// entry for the charid (e.g. remote players). `#[serde(default)]` keeps
+    /// stored logs readable.
+    #[serde(default)]
+    pub skillboard: Vec<u32>,
 }
 
 /// Emitted on each Conflux room load. The reception dispatcher rebuilds an

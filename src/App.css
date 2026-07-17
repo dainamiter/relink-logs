@@ -111,6 +111,10 @@
 .table.full-values .header-column {
   width: 6rem;
 }
+/* Sup % shows two figures ("+60% (+47%)") and needs more room than the rest. */
+.table .header-column.header-column-sup-percentage {
+  width: 7rem;
+}
 
 .table .header-name,
 .table .header-column {
@@ -158,14 +162,6 @@
     0 1px 3px 0 rgb(0 0 0 / 0.1),
     0 1px 2px -1px rgb(0 0 0 / 0.1);
   transition: width 0.1s ease-in-out;
-}
-
-.table .damage-bar-supp {
-  opacity: 0.55;
-}
-
-.table .damage-bar-echo {
-  opacity: 0.3;
 }
 
 .skill-row .row-data,
