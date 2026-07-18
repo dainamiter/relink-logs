@@ -1,25 +1,61 @@
 import { useMeterSettingsStore } from "@/stores/useMeterSettingsStore";
 import "./Logs.css";
 
-import { AppShell, Burger, Button, Group, NavLink, Text } from "@mantine/core";
-import { useDisclosure } from "@mantine/hooks";
+import { AppShell, Button, Group, Text } from "@mantine/core";
 import { Bug, Flag, Gear, GithubLogo, House, Translate } from "@phosphor-icons/react";
+import { getVersion } from "@tauri-apps/api/app";
 import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/api/shell";
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { Toaster } from "react-hot-toast";
 import { useTranslation } from "react-i18next";
-import { Link, Outlet, useNavigate } from "react-router-dom";
+import { Link, Outlet, useLocation, useNavigate } from "react-router-dom";
 
 const GITHUB_URL = "https://github.com/villith/gbfr-logs";
 
+const NavTab = ({
+  to,
+  icon,
+  active,
+  children,
+}: {
+  to: string;
+  icon: React.ReactNode;
+  active: boolean;
+  children: React.ReactNode;
+}) => (
+  <Button
+    variant={active ? "light" : "subtle"}
+    color="gray"
+    size="sm"
+    px="lg"
+    leftSection={icon}
+    component={Link}
+    to={to}
+    style={{
+      borderBottom: active ? "3px solid var(--mantine-color-blue-5)" : "3px solid transparent",
+      borderBottomLeftRadius: 0,
+      borderBottomRightRadius: 0,
+    }}
+  >
+    {children}
+  </Button>
+);
+
 const Layout = () => {
-  const [mobileOpened, { toggle: toggleMobile }] = useDisclosure();
-  const [desktopOpened, { toggle: toggleDesktop }] = useDisclosure(false);
   const { open_log_on_save } = useMeterSettingsStore((state) => ({ open_log_on_save: state.open_log_on_save }));
   const { t } = useTranslation();
+  const [version, setVersion] = useState("");
 
   const navigate = useNavigate();
+  const { pathname } = useLocation();
+  const confluxActive = pathname.startsWith("/logs/conflux");
+  const questsActive = !confluxActive && !pathname.startsWith("/logs/settings");
+  const onListPage = pathname === "/logs" || confluxActive;
+
+  useEffect(() => {
+    getVersion().then(setVersion);
+  }, []);
 
   useEffect(() => {
     const debugListener = listen("debug-event", (event: { payload: unknown }) => {
@@ -40,21 +76,11 @@ const Layout = () => {
 
   return (
     <div className="log-window">
-      <AppShell
-        header={{ height: 50 }}
-        navbar={{
-          width: 300,
-          breakpoint: "sm",
-          collapsed: { mobile: !mobileOpened, desktop: !desktopOpened },
-        }}
-        padding="sm"
-      >
+      <AppShell header={{ height: 50 }} padding="sm">
         <AppShell.Header>
           <Group h="100%" px="sm" justify="space-between">
             <Group h="100%" gap="sm">
-              <Burger opened={mobileOpened} onClick={toggleMobile} hiddenFrom="sm" size="sm" />
-              <Burger opened={desktopOpened} onClick={toggleDesktop} visibleFrom="sm" size="sm" />
-              <Text>GBFR Logs</Text>
+              <Text>GBFR Logs{version && ` - v${version}`}</Text>
             </Group>
             <Group gap="xs">
               <Button
@@ -84,19 +110,30 @@ const Layout = () => {
               >
                 {t("ui.submit-missing-label")}
               </Button>
+              <Button
+                variant="subtle"
+                color="gray"
+                size="compact-sm"
+                leftSection={<Gear size="1rem" />}
+                component={Link}
+                to="/logs/settings"
+              >
+                Settings
+              </Button>
             </Group>
           </Group>
         </AppShell.Header>
-        <AppShell.Navbar p="sm">
-          <AppShell.Section grow>
-            <NavLink label="Logs" leftSection={<House size="1rem" />} component={Link} to="/logs" />
-            <NavLink label="Conflux" leftSection={<Flag size="1rem" />} component={Link} to="/logs/conflux" />
-          </AppShell.Section>
-          <AppShell.Section>
-            <NavLink label="Settings" leftSection={<Gear size="1rem" />} component={Link} to="/logs/settings" />
-          </AppShell.Section>
-        </AppShell.Navbar>
         <AppShell.Main>
+          {onListPage && (
+            <Group gap="xs" mb="sm" justify="center">
+              <NavTab to="/logs" icon={<House size="1rem" />} active={questsActive}>
+                Quests
+              </NavTab>
+              <NavTab to="/logs/conflux" icon={<Flag size="1rem" />} active={confluxActive}>
+                Conflux
+              </NavTab>
+            </Group>
+          )}
           <Outlet />
         </AppShell.Main>
       </AppShell>

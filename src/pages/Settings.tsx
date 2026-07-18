@@ -1,4 +1,5 @@
 import { type ChecklistGroup } from "@/stores/useChecklistStore";
+import { useLogIndexStore } from "@/stores/useLogIndexStore";
 import { translateTraitId } from "@/utils";
 import { DragDropContext, Draggable, Droppable } from "@hello-pangea/dnd";
 import {
@@ -18,6 +19,7 @@ import {
   Text,
   Tooltip,
 } from "@mantine/core";
+import { modals } from "@mantine/modals";
 import { DotsSixVertical } from "@phosphor-icons/react";
 import { invoke } from "@tauri-apps/api";
 import { useState } from "react";
@@ -105,6 +107,17 @@ const SettingsPage = () => {
   } = useSettings();
 
   const checklist = useChecklistSettings();
+
+  const { deleteAllLogs } = useLogIndexStore((state) => ({ deleteAllLogs: state.deleteAllLogs }));
+
+  const confirmDeleteAll = () =>
+    modals.openConfirmModal({
+      title: "Delete logs",
+      children: <Text size="sm">{t("ui.logs.delete-all-logs-confirmation")}</Text>,
+      labels: { confirm: t("ui.delete-btn"), cancel: t("ui.cancel-btn") },
+      confirmProps: { color: "red" },
+      onConfirm: () => deleteAllLogs(),
+    });
 
   const toggleDebugMode = () => {
     const enabled = !debugMode;
@@ -268,6 +281,13 @@ const SettingsPage = () => {
             {t("ui.checklist-settings.reset")}
           </Button>
         </Stack>
+      </Fieldset>
+      <Fieldset legend="Logs" mt="md">
+        <Box>
+          <Button variant="default" onClick={confirmDeleteAll}>
+            {t("ui.logs.delete-all-btn")}
+          </Button>
+        </Box>
       </Fieldset>
     </Box>
   );

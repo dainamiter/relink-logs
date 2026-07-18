@@ -38,7 +38,6 @@ export const IndexPage = () => {
     setSelectedLogIds,
     setSelectedTargets,
     confirmDeleteSelected,
-    confirmDeleteAll,
     handleSetPage,
     currentPage,
     toggleSort,
@@ -103,22 +102,6 @@ export const IndexPage = () => {
 
   return (
     <Box>
-      <Group>
-        <Box style={{ display: "flex" }}>
-          <Text>{t("ui.logs.saved-count", { count: searchResult.logCount })}</Text>
-        </Box>
-        <Box style={{ display: "flex", flexDirection: "row-reverse", flex: 1 }}>
-          {selectedLogIds.length > 0 ? (
-            <Button size="xs" variant="default" onClick={confirmDeleteSelected} disabled={selectedLogIds.length === 0}>
-              {t("ui.logs.delete-selected-btn", { count: selectedLogIds.length })}
-            </Button>
-          ) : (
-            <Button size="xs" variant="default" onClick={confirmDeleteAll}>
-              {t("ui.logs.delete-all-btn")}
-            </Button>
-          )}
-        </Box>
-      </Group>
       <Box py={"xs"}>
         <Group>
           <SelectableEnemy targetIds={searchResult.enemyIds} setFilters={setFilters} filters={filters} />
@@ -127,6 +110,11 @@ export const IndexPage = () => {
           <Button size="s" variant="default" onClick={toggleAdvancedFilters}>
             {filters.showAdvancedFilters ? t("ui.logs.hide-advanced-filters") : t("ui.logs.show-advanced-filters")}
           </Button>
+          {selectedLogIds.length > 0 && (
+            <Button size="xs" variant="default" ml="auto" onClick={confirmDeleteSelected}>
+              {t("ui.logs.delete-selected-btn", { count: selectedLogIds.length })}
+            </Button>
+          )}
         </Group>
       </Box>
       <Box>
@@ -184,7 +172,12 @@ export const IndexPage = () => {
             <Table.Tbody>{rows}</Table.Tbody>
           </Table>
           <Divider my="sm" />
-          <Pagination total={searchResult.pageCount} value={currentPage} onChange={handleSetPage} />
+          <Group justify="space-between">
+            <Pagination total={searchResult.pageCount} value={currentPage} onChange={handleSetPage} />
+            <Text size="sm" c="dimmed">
+              {t("ui.logs.saved-count", { count: searchResult.logCount })}
+            </Text>
+          </Group>
         </Box>
       )}
     </Box>

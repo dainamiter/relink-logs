@@ -101,9 +101,6 @@ export const ConfluxIndexPage = () => {
 
   return (
     <Box>
-      <Group>
-        <Text>Conflux Runs ({result.runCount})</Text>
-      </Group>
       {result.runs.length === 0 ? (
         <Center py="xl">
           <Text c="dimmed">No Conflux runs recorded yet.</Text>
@@ -130,7 +127,12 @@ export const ConfluxIndexPage = () => {
             </Table.Tbody>
           </Table>
           <Divider my="sm" />
-          <Pagination total={result.pageCount} value={page} onChange={setPage} />
+          <Group justify="space-between">
+            <Pagination total={result.pageCount} value={page} onChange={setPage} />
+            <Text size="sm" c="dimmed">
+              {result.runCount} runs saved
+            </Text>
+          </Group>
         </Box>
       )}
     </Box>
