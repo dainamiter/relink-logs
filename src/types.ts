@@ -207,6 +207,41 @@ export type Overmastery = {
   value: number;
 };
 
+/** The v2.0.2 record-inline stat block. Labels for hp/attack/stunPower/power
+ * follow the pre-2.0 PlayerStats layout the block mirrors; unk50/unk58 are
+ * still-unconfirmed slots. */
+export type RecordStats = {
+  level: number;
+  hp: number;
+  attack: number;
+  unk50: number;
+  stunPower: number;
+  unk58: number;
+  power: number;
+};
+
+/** One trait id/level pair (wrightstone or innate weapon skill); level 0 =
+ * not yet known. */
+export type WeaponTraitPair = {
+  id: number;
+  level: number;
+};
+
+/** The equipped weapon's state (live-labeled). weaponId is the weapon.tbl Key
+ * hash of the equipped (transcendence-variant) row — the `weapons:` bundle's
+ * map key. innateTraits are the ACTIVE skills (awakening/transcendence
+ * upgrades applied by the game). */
+export type WeaponState = {
+  weaponId: number;
+  exp: number;
+  starLevel: number;
+  plusMarks: number;
+  awakeningLevel: number;
+  wrightstoneId: number;
+  wrightstoneTraits: WeaponTraitPair[];
+  innateTraits: WeaponTraitPair[];
+};
+
 export type OvermasteryInfo = {
   overmasteries: Overmastery[];
 };
@@ -243,6 +278,11 @@ export type PlayerData = {
   masterLevel: number;
   /** Unlocked skillboard (master trait) node effect ids; empty on older logs. */
   skillboard: number[];
+  /** Record-inline stat block (v2.0.2 identity recovery); null on older logs.
+   * `unk50`/`unk58` are still-unlabeled slots (see the Rust-side docs). */
+  stats: RecordStats | null;
+  /** Equipped weapon save-row snapshot (v2.0.2 identity recovery); null on older logs. */
+  weaponState: WeaponState | null;
   isOnline: boolean;
   weaponInfo: WeaponInfo | null;
   overmasteryInfo: OvermasteryInfo | null;

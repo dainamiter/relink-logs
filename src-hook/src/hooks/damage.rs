@@ -6,7 +6,7 @@ use retour::static_detour;
 
 use crate::{event, hooks::ffi::DamageInstance, process::Process};
 
-use super::{actor_idx, actor_type_id, get_source_parent};
+use super::{actor_idx, actor_type_id};
 
 type ProcessDamageEventFunc =
     unsafe extern "system" fn(*const usize, *const usize, *const usize, u8) -> usize;
@@ -264,12 +264,14 @@ impl OnProcessDamageHook {
             crate::hooks::diag::probe_pl2000_parent(source_specified_instance_ptr);
         }
 
-        // If the source_type is any of the following, then we need to get their parent entity.
-        let (source_parent_type_id, source_parent_idx) = get_source_parent(
+        // Resolve pets/avatars to their owner, then key players by their embedded
+        // record's party slot (v2.0.2: the raw index is character-scoped and merges
+        // two players on the same character into one meter row).
+        let (source_parent_type_id, source_parent_idx) = super::player_keyed_parent(
             source_type_id,
+            source_idx,
             source_specified_instance_ptr as *const usize,
-        )
-        .unwrap_or((source_type_id, source_idx));
+        );
 
         let target_type_id: u32 = actor_type_id(target_specified_instance_ptr as *const usize);
         let target_idx = actor_idx(target_specified_instance_ptr as *const usize);
@@ -406,7 +408,7 @@ impl OnProcessDotHook {
         let target_type_id = actor_type_id(target);
 
         let (source_parent_type_id, source_parent_idx) =
-            get_source_parent(source_type_id, source).unwrap_or((source_type_id, source_idx));
+            super::player_keyed_parent(source_type_id, source_idx, source);
 
         let event = Message::DamageEvent(DamageEvent {
             source: Actor {

@@ -262,6 +262,29 @@ const ACTOR_PLAYER_KEY_OFFSET: usize = 0x1AB40;
 /// it appears where a real key has not been assigned, so treat it as "no key".
 const INVALID_PLAYER_KEY: u32 = 0x887A_E0B0;
 
+/// Offset of the player record EMBEDDED IN THE ACTOR instance (v2.0.2).
+///
+/// Derived 2026-07-17 (online-collapse investigation): the only code in the exe
+/// that reads `[actor+0x1AB40]` (FUN_1409d1770 @0x9d59ba) also calls
+/// `FUN_140a2eae0(actor + 0x2a06*8)` = `actor+0x15030` — a record-shaped struct
+/// inline in the actor. Live-confirmed from the 2026-07-17 online-lobby logs:
+/// every mode-4 record address the identity hook saw for lobby players is
+/// exactly `actor_base + 0x15030` for a damage-actor instance seen in the same
+/// session (4/4 actors, two sessions). This is the per-player identity source
+/// that the id at +0x1AB40 (character-scoped, shared by same-character players)
+/// can never provide.
+const ACTOR_RECORD_OFFSET: usize = 0x15030;
+
+/// Record validity flag: the game's own id accessor (FUN_140378f10) treats the
+/// record id at +0x5EA8 as unset when the byte at +0x5EBC is 0.
+#[allow(dead_code)] // hookdiag ARDIAG probe only
+const RECORD_VALID_OFFSET: usize = 0x5EBC;
+
+/// The actor flags word beside the player key. Bit 0x40 gates the game's own
+/// record-id comparison (FUN_1409d1770: skips the id path when set).
+#[allow(dead_code)] // hookdiag ARDIAG probe only
+const ACTOR_FLAGS_OFFSET: usize = 0x1AB64;
+
 /// Prologue of the function that rebuilds the player identity snapshot
 /// (FUN_140a2b600). VERIFIED unique (1 match) on v2.0.2; clean entry, 1-arg
 /// `fn(rcx = player record)`. Hooking the refresh gives us names as soon as a
@@ -344,6 +367,74 @@ const EQ_MAP_BUCKETS: usize = 0x50;
 const EQ_MAP_MASK: usize = 0x68;
 const EQ_WEAPON_ASCII_LEN: usize = 0x10;
 
+/// The record's inline stat block (decompiled 2026-07-17 from the dispatcher
+/// `FUN_140a23e70` case 3 — which fills `+0x5B48/+0x5B4C/+0x5B54(float)/+0x5B58`
+/// from the same source struct as the ability ids, so it populates in-quest —
+/// and the town loadout-apply `FUN_1407a1080`, which maps loadout+0x3530..0x3550
+/// onto `+0x5B44..0x5B5C` including `+0x5B50` and `+0x5B5C`). The loadout-side
+/// values are level-interpolated stat-curve columns (`FUN_143c4f260`).
+const RECORD_STATS_OFFSET: usize = 0x5B48;
+
+/// The equipped weapon's state, live-labeled 2026-07-17 (user's Hraesvelgr:
+/// weapon id ded16fcf = WEP_PL2700_06_03, wrightstone Stun Power 20 / ATK 15 /
+/// Provoke 10, innate Catastrophe Nova / Glass Cannon / DMG Cap / Sigil
+/// Booster — all matched in the WPDIAG blob dump). One 18-u32 struct layout
+/// (see `protocol::WeaponState`), whose PRIMARY home is INLINE IN THE RECORD
+/// at +0x50 with the active innate skill ids at +0x94 (5 sentinel-terminated
+/// slots) — established by the `FUN_140a2d8d0` decompile (2026-07-17 #2):
+/// modes 0-2 (`*(record+0x5EAC)`, in-quest) copy the weapon-instance table
+/// column keyed by `*(*(record+0x5DD0)+0x44)` via `FUN_140321e30`; town modes
+/// 4/5 copy from loadout+0x3228. `*(record+0x5E80)+0x50` (blob) is only the
+/// NETWORK mirror of this block (NULL in solo), same struct at +0x50 /
+/// innates +0x94.
+///
+/// NOT a weapon source (live-disproven by the 2026-07-17 WSDIAG2 run): the
+/// charid map @ save-root+0x129B08 — its 15 × 0x190 rows are the LOADOUT
+/// PRESET store {charid @ +0x60, 13 sigil instance ids @ +0x70, 4 ability
+/// ids @ +0xA4, weapon-instance table key @ +0xB4, 5-slot innate override
+/// @ +0xC0, 50 skillboard node keys @ +0xD4}.
+const RECORD_WEAPON_STATE_OFFSET: usize = 0x50;
+const RECORD_INNATE_OFFSET: usize = 0x94;
+const RECORD_WEAPON_BLOB_OFFSET: usize = 0x5E80;
+const BLOB_WEAPON_STATE_OFFSET: usize = 0x50;
+const BLOB_INNATE_OFFSET: usize = 0x94;
+const WEAPON_INNATE_SLOTS: usize = 5;
+/// The innate-LEVEL pair array: 5 {skill id, level} pairs 0x60 past the id
+/// slots (record +0xF4 — one word AFTER the zero word at +0xF0; the first
+/// 07-18 read miscounted and shipped 0x5C, which put every read one word
+/// early and level-0'd everything). Live-confirmed 2026-07-18 via the
+/// in-quest WSDIAG3 dumps — the +0x94 ids repeat there with the user's known
+/// levels 32/22/12/1. Levels are only trusted for a pair whose id matches the
+/// slot id, so layout drift degrades to the old level-0 behavior instead of
+/// attaching garbage.
+const INNATE_LEVEL_PAIRS_REL: usize = 0x60;
+
+/// Weapon-state fill mode (`FUN_140a2d8d0` switch) and the mode-0..2 source:
+/// a pointer at record+0x5DD0 whose +0x44 is the weapon-instance table key.
+#[allow(dead_code)] // hookdiag probes only
+const RECORD_MODE_OFFSET: usize = 0x5EAC;
+#[allow(dead_code)] // hookdiag probes only
+const RECORD_WEAPON_SOURCE_OFFSET: usize = 0x5DD0;
+#[allow(dead_code)] // hookdiag probes only
+const WEAPON_SOURCE_KEY_OFFSET: usize = 0x44;
+
+/// RVA of the live weapon-instance table singleton `DAT_147c24af8` (the
+/// owned-weapon store; earlier misread first as a wrightstone table, then as
+/// a "weapon-skill" table). 32 rows × 0x680 from +0x370; each row is
+/// 8 columns × 0xD0. A COLUMN IS one weapon instance: its small instance key
+/// at +0x00, then the 18-u32 weapon struct (so +0x04 = weapon.tbl Key hash),
+/// validity count at +0x40, the 5 active innate skill-id slots at +0x44.
+/// `FUN_140321e30` copies a column verbatim into record+0x50 / blob+0x50.
+const WEAPON_TABLE_RVA: usize = 0x7c24af8;
+const WS_TABLE_BASE: usize = 0x370;
+const WS_TABLE_ROWS: usize = 32;
+const WS_TABLE_ROW_STRIDE: usize = 0x680;
+const WS_TABLE_COLS: usize = 8;
+const WS_TABLE_COL_STRIDE: usize = 0xD0;
+const WS_TABLE_VALID_OFFSET: usize = 0x40;
+const WS_TABLE_DATA_OFFSET: usize = 0x44;
+const WS_TABLE_SKILL_SLOTS: usize = 5;
+
 /// RVA of the CharaPower progression singleton `DAT_147c24a78` and the two
 /// maps the game's own skillboard query (`FUN_140297bc0`, decompiled
 /// 2026-07-17) walks:
@@ -382,6 +473,8 @@ struct StoredPlayerIdentity {
     weapon_key: String,
     master_level: u32,
     skillboard: Vec<u32>,
+    stats: Option<protocol::RecordStats>,
+    weapon_state: Option<protocol::WeaponState>,
 }
 
 /// One party slot's identity, paired with the id its record most recently carried
@@ -442,6 +535,16 @@ impl IdentityStore {
             .iter()
             .flatten()
             .find(|entry| entry.id == id)
+            .map(|entry| &entry.identity)
+    }
+
+    /// The identity currently claimed by a party slot. Used to enrich the
+    /// embedded-record identity path with the fuller equipment payload the
+    /// RefreshPlayerIdentity hook read for that slot.
+    fn find_by_slot(&self, slot: u8) -> Option<&StoredPlayerIdentity> {
+        self.by_slot
+            .get(slot.min(3) as usize)?
+            .as_ref()
             .map(|entry| &entry.identity)
     }
 }
@@ -584,6 +687,8 @@ impl OnLoadPlayerIdentityHook {
         );
         identity.weapon_key = read_equipped_weapon_key(record);
         identity.skillboard = read_record_skillboard(record);
+        identity.stats = read_record_stats(record);
+        identity.weapon_state = read_weapon_state(record);
 
         // One line per claim summarizing what the NEW production readers
         // resolved, so a single live run verifies overmasteries/abilities/
@@ -604,6 +709,55 @@ impl OnLoadPlayerIdentityHook {
             identity.skillboard.len(),
             identity.player_level,
         );
+
+        // Companion lines for the stat/weapon-state labeling run: STDIAG dumps
+        // the whole candidate window around the record stat block (0x5B38..0x5B88)
+        // so each field can be matched against the in-game status screen, and
+        // WSDIAG dumps the matched weapon save row's raw blocks.
+        #[cfg(feature = "hookdiag")]
+        {
+            let base = record as usize;
+            let window: Vec<String> = (0..20)
+                .map(|i| {
+                    let off = 0x5B38 + i * 4;
+                    format!(
+                        "{off:#06x}={:#010x}",
+                        crate::hooks::diag::read_u32_guarded(base, off)
+                    )
+                })
+                .collect();
+            log::info!(
+                "STDIAG key={player_key:#010x} party={} {}",
+                identity.party_index,
+                window.join(" ")
+            );
+            if let Some(ws) = &identity.weapon_state {
+                log::info!(
+                    "WSDIAG key={player_key:#010x} party={} wid={:#010x} exp={} star={} plus={} awk={} wstone={:#010x} wtraits={:?} innate={:?}",
+                    identity.party_index,
+                    ws.weapon_id,
+                    ws.exp,
+                    ws.star_level,
+                    ws.plus_marks,
+                    ws.awakening_level,
+                    ws.wrightstone_id,
+                    ws.wrightstone_traits
+                        .iter()
+                        .map(|t| format!("{:08x}/{}", t.id, t.level))
+                        .collect::<Vec<_>>(),
+                    ws.innate_traits
+                        .iter()
+                        .map(|t| format!("{:08x}/{}", t.id, t.level))
+                        .collect::<Vec<_>>(),
+                );
+            } else {
+                log::info!(
+                    "WSDIAG key={player_key:#010x} party={} weapon state UNRESOLVED (blob null / rows ambiguous or absent)",
+                    identity.party_index,
+                );
+            }
+            log_weapon_state_probe(record, player_key);
+        }
 
         // Offline non-slot-0 records are the AI companions (and, transiently, the
         // pre-population placeholders of an online lobby). Their snapshot carries the
@@ -686,6 +840,53 @@ pub fn identity_event_for_actor(
 
     #[cfg(feature = "hookdiag")]
     let actor_address = actor as usize;
+
+    // Online-collapse probe: for each distinct damage actor, log its
+    // character-scoped ids next to its own embedded record's identity.
+    #[cfg(feature = "hookdiag")]
+    log_actor_record_probe(actor_address, character_type, actor_index);
+
+    // v2.0.2 collapse fix — PRIMARY PATH: the actor's own embedded record
+    // (`actor+0x15030`) carries per-PLAYER identity (party slot, online flag,
+    // display name) that the character-scoped id at +0x1AB40 cannot provide:
+    // two players on the same character share that id, which merged their
+    // meter rows. Live-proven online + solo (2026-07-18). The event is keyed
+    // by the synthetic slot key so damage/SBA/stun attribution joins on a
+    // player-unique index.
+    if let Some(identity) = embedded_identity_struct(actor as usize) {
+        let party_index = identity.party_index.min(3);
+        // The embedded snapshot carries identity + sigils; the RefreshPlayerIdentity
+        // hook reads the fuller equipment payload (weapon, overmasteries, stats...)
+        // from the same records — enrich from its per-slot cache when present.
+        let cached = identities()
+            .lock()
+            .ok()
+            .and_then(|store| store.find_by_slot(party_index).cloned());
+        let equip = cached.unwrap_or_else(|| identity.clone());
+        return Some(PlayerIdentityEvent {
+            character_name: identity.character_name,
+            display_name: identity.display_name,
+            character_type,
+            party_index,
+            actor_index: slot_key(party_index),
+            is_online: identity.is_online,
+            sigils: if identity.sigils.is_empty() {
+                equip.sigils
+            } else {
+                identity.sigils
+            },
+            summons: equip.summons,
+            overmasteries: equip.overmasteries,
+            player_level: equip.player_level,
+            abilities: equip.abilities,
+            weapon_key: equip.weapon_key,
+            master_level: equip.master_level,
+            skillboard: equip.skillboard,
+            stats: equip.stats,
+            weapon_state: equip.weapon_state,
+        });
+    }
+
     let Some(player_key) = read_actor_player_key(actor) else {
         // Bounded: log the first N actors whose key read comes back
         // empty/sentinel so "player shows as [Guest]" cases are visible.
@@ -746,6 +947,8 @@ pub fn identity_event_for_actor(
         weapon_key: identity.weapon_key,
         master_level: identity.master_level,
         skillboard: identity.skillboard,
+        stats: identity.stats,
+        weapon_state: identity.weapon_state,
     })
 }
 
@@ -884,6 +1087,303 @@ fn read_equipped_weapon_key(record: *const usize) -> String {
         return String::new();
     }
     format!("WEP_PL{text}")
+}
+
+/// The game's custom XXHash32 variant (seed 0x178A54A4 and hardcoded lane
+/// seeds; ported from GBFRDataTools' `XXHash32Custom`, including its
+/// `> 16`-not-`>= 16` inner loop condition). This is the hash behind every
+/// `hash_string` id the save data stores (weapon keys, trait ids, ...).
+/// Currently unreferenced (the weapon path reads ids directly) but kept —
+/// bridging id strings to save hashes keeps coming up in this recovery work.
+#[allow(dead_code)]
+fn game_xxhash32(input: &[u8]) -> u32 {
+    const PRIME32_1: u32 = 0x9e3779b1;
+    const PRIME32_2: u32 = 0x85EBCA77;
+    const PRIME32_3: u32 = 0xC2B2AE3D;
+    const PRIME32_4: u32 = 0x27D4EB2F;
+    const PRIME32_5: u32 = 0x165667B1;
+
+    fn round(seed: u32, input: u32) -> u32 {
+        seed.wrapping_add(input.wrapping_mul(PRIME32_2))
+            .rotate_left(13)
+            .wrapping_mul(PRIME32_1)
+    }
+    fn read_u32(bytes: &[u8]) -> u32 {
+        u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]])
+    }
+
+    let mut p = input;
+    let mut h32: u32 = 0x178A54A4;
+
+    if input.len() >= 16 {
+        let (mut v1, mut v2, mut v3, mut v4) =
+            (0x2557311Bu32, 0x871FB76Au32, 0x0133ECF3u32, 0x62FC7342u32);
+        loop {
+            v1 = round(v1, read_u32(&p[0..]));
+            v2 = round(v2, read_u32(&p[4..]));
+            v3 = round(v3, read_u32(&p[8..]));
+            v4 = round(v4, read_u32(&p[12..]));
+            p = &p[16..];
+            if p.len() <= 16 {
+                break;
+            }
+        }
+        h32 = v1
+            .rotate_left(1)
+            .wrapping_add(v2.rotate_left(7))
+            .wrapping_add(v3.rotate_left(12))
+            .wrapping_add(v4.rotate_left(18));
+    }
+
+    h32 = h32.wrapping_add(input.len() as u32);
+    while p.len() >= 4 {
+        h32 = h32
+            .wrapping_add(read_u32(p).wrapping_mul(PRIME32_3))
+            .rotate_left(17)
+            .wrapping_mul(PRIME32_4);
+        p = &p[4..];
+    }
+    for &b in p {
+        h32 = h32
+            .wrapping_add((b as u32).wrapping_mul(PRIME32_5))
+            .rotate_left(11)
+            .wrapping_mul(PRIME32_1);
+    }
+
+    h32 ^= h32 >> 15;
+    h32 = h32.wrapping_mul(PRIME32_2);
+    h32 ^= h32 >> 13;
+    h32 = h32.wrapping_mul(PRIME32_3);
+    h32 ^= h32 >> 16;
+    h32
+}
+
+/// Reads the record's inline stat block (see [`RECORD_STATS_OFFSET`]). Returns
+/// `None` when every slot is zero/sentinel (record not yet populated). Field
+/// labels are tentative pending live confirmation — see `protocol::RecordStats`.
+fn read_record_stats(record: *const usize) -> Option<protocol::RecordStats> {
+    use crate::hooks::diag::{read_f32_guarded, read_u32_guarded};
+
+    let base = record as usize;
+    let clean = |v: u32| if v == EMPTY_SIGIL_HASH { 0 } else { v };
+    let level = sanity_u32(read_u32_guarded(base, RECORD_CHAR_LEVEL_OFFSET), 150);
+    let hp = clean(read_u32_guarded(base, RECORD_STATS_OFFSET));
+    let attack = clean(read_u32_guarded(base, RECORD_STATS_OFFSET + 0x4));
+    let unk_50 = clean(read_u32_guarded(base, RECORD_STATS_OFFSET + 0x8));
+    let stun_power = read_f32_guarded(base, RECORD_STATS_OFFSET + 0xC)
+        .filter(|f| f.is_finite() && *f >= 0.0 && *f < 1e9)
+        .unwrap_or(0.0);
+    let unk_58 = clean(read_u32_guarded(base, RECORD_STATS_OFFSET + 0x10));
+    let power = clean(read_u32_guarded(base, RECORD_STATS_OFFSET + 0x14));
+
+    if hp == 0 && attack == 0 && power == 0 {
+        return None;
+    }
+    Some(protocol::RecordStats {
+        level,
+        hp,
+        attack,
+        unk_50,
+        stun_power,
+        unk_58,
+        power,
+    })
+}
+
+/// Parses the 18-u32 weapon-state struct (live-labeled 2026-07-17 against the
+/// user's Hraesvelgr — see `protocol::WeaponState` for the field map). The
+/// same layout appears at `blob+0x50` (record `+0x5E80` blob, online contexts)
+/// and at `row+0x70` of the per-character save rows. Returns `None` unless the
+/// weapon id slot holds a plausible hash.
+fn parse_weapon_struct(ints: &[u32]) -> Option<protocol::WeaponState> {
+    let valid_id = |v: u32| v != 0 && v != EMPTY_SIGIL_HASH;
+    let weapon_id = *ints.get(1)?;
+    if !valid_id(weapon_id) || weapon_id < 0x10000 {
+        return None;
+    }
+    let clamp = |v: u32, max: u32| if v > max { 0 } else { v };
+    let wrightstone_id = ints[14];
+    let wrightstone_traits = [(8, 9), (10, 11), (12, 13)]
+        .iter()
+        .filter(|(id_idx, _)| valid_id(ints[*id_idx]))
+        .map(|(id_idx, lvl_idx)| protocol::WeaponTraitPair {
+            id: ints[*id_idx],
+            level: clamp(ints[*lvl_idx], 99),
+        })
+        .collect();
+    Some(protocol::WeaponState {
+        weapon_id,
+        exp: ints[4],
+        star_level: clamp(ints[5], 9),
+        plus_marks: clamp(ints[6], 99),
+        awakening_level: clamp(ints[7], 20),
+        wrightstone_id: if valid_id(wrightstone_id) {
+            wrightstone_id
+        } else {
+            0
+        },
+        wrightstone_traits,
+        innate_traits: Vec::new(),
+    })
+}
+
+/// The weapon's active innate skills at `innate_off` (5 sentinel-terminated
+/// id slots), with each level taken from the pair array at
+/// `innate_off + INNATE_LEVEL_PAIRS_REL` by id lookup — the pairs repeat the
+/// slot ids, but the level is only trusted when a pair's id matches, so an
+/// unmatched slot degrades to level 0. Guarded reads — never faults.
+fn read_innate_traits(src: usize, innate_off: usize) -> Vec<protocol::WeaponTraitPair> {
+    use crate::hooks::diag::read_u32_guarded;
+
+    let valid_id = |v: u32| v != 0 && v != EMPTY_SIGIL_HASH;
+    let pairs_off = innate_off + INNATE_LEVEL_PAIRS_REL;
+    (0..WEAPON_INNATE_SLOTS)
+        .map(|i| read_u32_guarded(src, innate_off + i * 4))
+        .take_while(|id| valid_id(*id))
+        .map(|id| {
+            let level = (0..WEAPON_INNATE_SLOTS)
+                .find(|j| read_u32_guarded(src, pairs_off + j * 8) == id)
+                .map(|j| read_u32_guarded(src, pairs_off + j * 8 + 4))
+                .filter(|level| *level <= 99)
+                .unwrap_or(0);
+            protocol::WeaponTraitPair { id, level }
+        })
+        .collect()
+}
+
+/// Reads the equipped weapon's state for a record.
+///
+/// Primary source: the record-inline block at record+0x50 — the game's own
+/// weapon-state home, filled for every record by `FUN_140a2d8d0` (in-quest
+/// modes copy the live weapon-instance table column; town modes copy from the
+/// loadout). Active innate skill ids follow at +0x94, already
+/// upgrade-resolved (e.g. Catastrophe → Catastrophe Nova). Fallback: the
+/// network blob `*(record+0x5E80)+0x50`, which mirrors the same layout. If
+/// the chosen struct carries no inline innate ids, they resolve from the
+/// weapon-instance table column named by the struct's leading key word.
+/// Guarded reads — never faults.
+fn read_weapon_state(record: *const usize) -> Option<protocol::WeaponState> {
+    use crate::hooks::diag::{read_ptr_guarded, read_u32_guarded, MODULE_BASE};
+    use std::sync::atomic::Ordering;
+
+    let valid_id = |v: u32| v != 0 && v != EMPTY_SIGIL_HASH;
+
+    // (state, table key = struct[0], source base, innate-id offset)
+    let parse_at = |base: usize,
+                    state_off: usize,
+                    innate_off: usize|
+     -> Option<(protocol::WeaponState, u32, usize, usize)> {
+        let ints: Vec<u32> = (0..18)
+            .map(|i| read_u32_guarded(base, state_off + i * 4))
+            .collect();
+        parse_weapon_struct(&ints).map(|state| (state, ints[0], base, innate_off))
+    };
+
+    let base = record as usize;
+    let (mut state, table_key, src, innate_off) =
+        parse_at(base, RECORD_WEAPON_STATE_OFFSET, RECORD_INNATE_OFFSET).or_else(|| {
+            let blob = read_ptr_guarded(base, RECORD_WEAPON_BLOB_OFFSET).filter(|b| *b > 0x10000)?;
+            parse_at(blob, BLOB_WEAPON_STATE_OFFSET, BLOB_INNATE_OFFSET)
+        })?;
+
+    state.innate_traits = read_innate_traits(src, innate_off);
+
+    if state.innate_traits.is_empty() && valid_id(table_key) {
+        let module = MODULE_BASE.load(Ordering::Relaxed);
+        if module != 0 {
+            state.innate_traits = resolve_innate_skills(module, table_key)
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|id| valid_id(*id))
+                .map(|id| protocol::WeaponTraitPair { id, level: 0 })
+                .collect();
+        }
+    }
+    Some(state)
+}
+
+/// One-run verifier for the record-inline weapon block (WSDIAG3): dumps
+/// record+0x40..0x140 per slot (the 18-u32 struct sits at +0x50, innate ids
+/// at +0x94; the words after +0xA8 are the innate-LEVEL candidates — the
+/// user's 32/22/12/1 should appear), the record's fill mode (+0x5EAC) and
+/// mode-0..2 source key (`*(record+0x5DD0)+0x44`), plus a one-shot dump of
+/// every populated weapon-instance table column (key, weapon id,
+/// progression, innates). Bounded fires.
+#[cfg(feature = "hookdiag")]
+fn log_weapon_state_probe(record: *const usize, player_key: u32) {
+    use crate::hooks::diag::{first_n, read_ptr_guarded, read_u32_guarded, MODULE_BASE};
+    use std::sync::atomic::{AtomicU32, Ordering};
+
+    static FIRES: AtomicU32 = AtomicU32::new(0);
+    if !first_n(&FIRES, 16) {
+        return;
+    }
+    let dump = |base: usize, off: usize, n: usize| -> String {
+        (0..n)
+            .map(|i| format!("{:08x}", read_u32_guarded(base, off + i * 4)))
+            .collect::<Vec<_>>()
+            .join(" ")
+    };
+
+    let base = record as usize;
+    let mode = read_u32_guarded(base, RECORD_MODE_OFFSET);
+    let src_key = read_ptr_guarded(base, RECORD_WEAPON_SOURCE_OFFSET)
+        .map(|p| read_u32_guarded(p, WEAPON_SOURCE_KEY_OFFSET))
+        .unwrap_or(0);
+    log::info!(
+        "WSDIAG3 key={player_key:#010x} mode={mode} srckey={src_key:#x} rec 40..140: {}",
+        dump(base, 0x40, 64)
+    );
+
+    let module = MODULE_BASE.load(Ordering::Relaxed);
+    if module == 0 {
+        return;
+    }
+    let Some(table) = read_ptr_guarded(module, WEAPON_TABLE_RVA).filter(|t| *t != 0) else {
+        return;
+    };
+    // The table is global state — dump its populated columns once per run.
+    static TABLE_DUMPED: AtomicU32 = AtomicU32::new(0);
+    if first_n(&TABLE_DUMPED, 1) {
+        for row in 0..WS_TABLE_ROWS {
+            for col in 0..WS_TABLE_COLS {
+                let entry =
+                    table + WS_TABLE_BASE + row * WS_TABLE_ROW_STRIDE + col * WS_TABLE_COL_STRIDE;
+                let key = read_u32_guarded(entry, 0);
+                if key == 0 || key == EMPTY_SIGIL_HASH {
+                    continue;
+                }
+                log::info!("WSDIAG3 tbl[{row}.{col}] {}", dump(entry, 0, 24));
+            }
+        }
+    }
+}
+
+/// Scans the live weapon-instance table (see [`WEAPON_TABLE_RVA`]) for the
+/// column matching `skill_key` and returns its 5 innate skill-id slots — the
+/// same table walk the game's weapon-state fillers perform. Guarded reads.
+fn resolve_innate_skills(module: usize, skill_key: u32) -> Option<Vec<u32>> {
+    use crate::hooks::diag::read_ptr_guarded;
+    use crate::hooks::diag::read_u32_guarded;
+
+    let table = read_ptr_guarded(module, WEAPON_TABLE_RVA).filter(|t| *t != 0)?;
+    for row in 0..WS_TABLE_ROWS {
+        for col in 0..WS_TABLE_COLS {
+            let entry = table + WS_TABLE_BASE + row * WS_TABLE_ROW_STRIDE + col * WS_TABLE_COL_STRIDE;
+            if read_u32_guarded(entry, 0) != skill_key {
+                continue;
+            }
+            if read_u32_guarded(entry, WS_TABLE_VALID_OFFSET) as i32 <= 0 {
+                return None;
+            }
+            return Some(
+                (0..WS_TABLE_SKILL_SLOTS)
+                    .map(|i| read_u32_guarded(entry, WS_TABLE_DATA_OFFSET + i * 4))
+                    .collect(),
+            );
+        }
+    }
+    None
 }
 
 /// Reads the record's unlocked skillboard (master trait) node effect ids —
@@ -1078,6 +1578,15 @@ unsafe fn read_player_identity(snapshot: *const u8) -> Option<StoredPlayerIdenti
         return None;
     }
 
+    // The value may come out of game memory without being a pointer at all —
+    // the actor-embedded record slot on an actor that carries no record holds
+    // arbitrary data (2026-07-18 in-quest crash: 0x000005b1000005b0). Probe the
+    // whole struct range up front; every read below stays inside it except the
+    // display-name buffer, which checked_raw() guards itself.
+    if !crate::hooks::diag::readable(snapshot as usize, std::mem::size_of::<SigilList>()) {
+        return None;
+    }
+
     let list = &*(snapshot as *const SigilList);
 
     let is_online = list.is_online;
@@ -1118,6 +1627,8 @@ unsafe fn read_player_identity(snapshot: *const u8) -> Option<StoredPlayerIdenti
         weapon_key: String::new(),
         master_level: 0,
         skillboard: Vec::new(),
+        stats: None,
+        weapon_state: None,
     })
 }
 
@@ -1174,6 +1685,117 @@ fn log_identity_record(record: *const usize, snapshot: *const u8, player_key: u3
     };
     log::info!(
         "IDDIAG record={base:#x} mode@5EAC={mode} id@5EA8={player_key:#010x} n@5EA4={n_a4:#010x} n@5EB0={n_b0:#010x} party={party} online={online} name={name}"
+    );
+}
+
+/// Base of the synthetic per-PLAYER actor index. The game's own actor index
+/// (`+0x170`) and player key (`+0x1AB40`) are CHARACTER-scoped — two players on
+/// the same character share both, which merged their meter rows (live-proven
+/// 2026-07-18: both Maglielles carried actor_index 2368344264 / id 0x25d46f4b).
+/// The party slot from the actor's embedded record is the only player-unique,
+/// mode-independent key, so player-attributed events carry
+/// `PLAYER_SLOT_INDEX_BASE | slot` instead. The base sits far above real actor
+/// indexes (observed values are 0x8D......) so it can never collide with an
+/// enemy index.
+pub(crate) const PLAYER_SLOT_INDEX_BASE: u32 = 0xF000_0000;
+
+/// The per-player event key for a party slot (0..=3).
+pub(crate) fn slot_key(party_index: u8) -> u32 {
+    PLAYER_SLOT_INDEX_BASE | (party_index.min(3) as u32)
+}
+
+/// Full identity read from the actor's own embedded record (`actor+0x15030`).
+/// `None` for non-player actors (enemies, pets) — their record slot holds
+/// arbitrary bytes and the guarded snapshot parse rejects it.
+fn embedded_identity_struct(actor: usize) -> Option<StoredPlayerIdentity> {
+    use crate::hooks::diag::read_ptr_guarded;
+
+    let record = actor.checked_add(ACTOR_RECORD_OFFSET)?;
+    let snapshot = read_ptr_guarded(record, PLAYER_IDENTITY_OFFSET)?;
+    if snapshot == 0 {
+        return None;
+    }
+    unsafe { read_player_identity(snapshot as *const u8) }
+}
+
+/// The per-player slot key for an actor, when its embedded record resolves.
+/// This is what damage/SBA/stun attribution uses instead of the shared
+/// character-scoped index.
+pub(crate) fn player_slot_key_for_actor(actor: *const usize) -> Option<u32> {
+    if actor.is_null() {
+        return None;
+    }
+    embedded_identity_struct(actor as usize).map(|identity| slot_key(identity.party_index))
+}
+
+#[allow(dead_code)] // used by the hookdiag SBAUPD/SBAPOLL probes
+pub(crate) fn actor_embedded_identity(actor: usize) -> Option<(u8, bool, String)> {
+    let identity = embedded_identity_struct(actor)?;
+    Some((
+        identity.party_index,
+        identity.is_online,
+        identity.display_name.to_string_lossy().into_owned(),
+    ))
+}
+
+/// hookdiag: per-actor embedded-record probe (online same-character collapse).
+/// One line per distinct damage actor: the character-scoped ids the current
+/// resolution uses (idx@0x170, id@0x1AB40, flags@0x1AB64) NEXT TO the actor's
+/// own embedded record (+0x15030: valid flag, record id, mode) and that
+/// record's identity snapshot (party/online/name). If the embedded record
+/// resolves per-player identity in BOTH solo and online lobbies, it becomes
+/// the production keying fix. Guarded reads; never faults.
+#[cfg(feature = "hookdiag")]
+static ARDIAG_SEEN: std::sync::Mutex<Vec<(usize, u32)>> = std::sync::Mutex::new(Vec::new());
+
+/// Reset the ARDIAG dedup set (called from the quest-load hook). Without this the
+/// 64-entry budget fills during town/solo play and the online quest's actors —
+/// the interesting ones — never get logged (proven by the 2026-07-18 run).
+#[cfg(feature = "hookdiag")]
+pub(crate) fn reset_ardiag_seen() {
+    if let Ok(mut seen) = ARDIAG_SEEN.try_lock() {
+        seen.clear();
+    }
+}
+
+#[cfg(feature = "hookdiag")]
+fn log_actor_record_probe(actor: usize, character_type: u32, actor_index: u32) {
+    use crate::hooks::diag::{read_ptr_guarded, read_u32_guarded};
+
+    let record = actor + ACTOR_RECORD_OFFSET;
+    // Dedup by (actor, record mode) — NOT by actor alone: the embedded record is
+    // REWRITTEN in place when a lobby forms (2026-07-18: the same record read
+    // "mode=1 online=0 Manmoth" in town and "mode=4 online=1 <lobby name>" later),
+    // so a mode change must re-log the actor or the online identities are never
+    // captured. Mode read first (guarded, cheap) to build the key.
+    let mode = read_u32_guarded(record, 0x5EAC);
+    {
+        let Ok(mut seen) = ARDIAG_SEEN.try_lock() else {
+            return;
+        };
+        if seen.iter().any(|e| *e == (actor, mode)) {
+            return;
+        }
+        if seen.len() >= 64 {
+            return;
+        }
+        seen.push((actor, mode));
+    }
+
+    let idx170 = read_u32_guarded(actor, 0x170);
+    let id_ab40 = read_u32_guarded(actor, ACTOR_PLAYER_KEY_OFFSET);
+    let flags_ab64 = read_u32_guarded(actor, ACTOR_FLAGS_OFFSET);
+    let valid = read_u32_guarded(record, RECORD_VALID_OFFSET) & 0xFF;
+    let rec_id = read_u32_guarded(record, PLAYER_KEY_OFFSET);
+    let snapshot = read_ptr_guarded(record, PLAYER_IDENTITY_OFFSET).unwrap_or(0);
+    let (party, online, name) = match actor_embedded_identity(actor) {
+        Some((party, online, name)) => (party as i32, online as i32, name),
+        None => (-1, -1, "<unresolved>".to_string()),
+    };
+    log::info!(
+        "ARDIAG actor={actor:#x} type={character_type:#010x} idx={actor_index} idx170={idx170:#x} \
+         id@1AB40={id_ab40:#010x} flags@1AB64={flags_ab64:#010x} rec={record:#x} valid={valid} \
+         rec_id={rec_id:#010x} mode={mode} snap={snapshot:#x} party={party} online={online} name={name}"
     );
 }
 
@@ -1928,4 +2550,79 @@ fn log_loadout_probe(record: *const usize) {
         .map(|off| format!("{:08x}", read_u32_guarded(loadout, off)))
         .collect();
     log::info!("LODIAG tail@3508: {}", tail2.join(" "));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // The exact "snapshot pointer" value from the 2026-07-18 in-quest crash dump:
+    // the slot at record+PLAYER_IDENTITY_OFFSET held two adjacent u32s
+    // (0x5b0/0x5b1), not a pointer, because that actor carries no identity record
+    // at ACTOR_RECORD_OFFSET. Unmapped in any normal process.
+    const CRASH_SNAPSHOT_PTR: usize = 0x0000_05b1_0000_05b0;
+
+    #[test]
+    fn read_player_identity_rejects_unmapped_snapshot() {
+        let identity = unsafe { read_player_identity(CRASH_SNAPSHOT_PTR as *const u8) };
+        assert!(identity.is_none());
+    }
+
+    // The record layout from the 2026-07-18 WSDIAG3 in-quest dumps (records
+    // 0x0d21b430 / 0x9b15cfb1 / 0xdd7a151e / 0x627bcb0d): innate ids at
+    // +0x94, a zero word at +0xF0, and the id-repeating {id, level} pair
+    // array at +0xF4 carrying the live-confirmed levels 32/22/12/1.
+    fn innate_buffer(pair_ids: [u32; 4]) -> Vec<u8> {
+        let ids = [0x1e1cecce_u32, 0xa8a3163b, 0xdc584f60, 0x57e8a93f, EMPTY_SIGIL_HASH];
+        let levels = [32_u32, 22, 12, 1];
+        let mut buf = vec![0u8; 0x200];
+        for (i, id) in ids.iter().enumerate() {
+            buf[0x94 + i * 4..0x94 + i * 4 + 4].copy_from_slice(&id.to_le_bytes());
+        }
+        for (i, (id, level)) in pair_ids.iter().zip(levels).enumerate() {
+            buf[0xF4 + i * 8..0xF4 + i * 8 + 4].copy_from_slice(&id.to_le_bytes());
+            buf[0xF4 + i * 8 + 4..0xF4 + i * 8 + 8].copy_from_slice(&level.to_le_bytes());
+        }
+        buf
+    }
+
+    #[test]
+    fn read_innate_traits_takes_levels_from_the_matching_pair_array() {
+        let buf = innate_buffer([0x1e1cecce, 0xa8a3163b, 0xdc584f60, 0x57e8a93f]);
+        let traits = read_innate_traits(buf.as_ptr() as usize, 0x94);
+        let pairs: Vec<(u32, u32)> = traits.iter().map(|t| (t.id, t.level)).collect();
+        assert_eq!(
+            pairs,
+            vec![(0x1e1cecce, 32), (0xa8a3163b, 22), (0xdc584f60, 12), (0x57e8a93f, 1)]
+        );
+    }
+
+    #[test]
+    fn read_innate_traits_keeps_level_zero_when_pair_ids_do_not_match() {
+        // Layout drift (pair array holding different ids) must never attach a
+        // wrong level — ids still come through, levels fall back to 0.
+        let buf = innate_buffer([0xdeadbeef, 0xdeadbeef, 0xdeadbeef, 0xdeadbeef]);
+        let traits = read_innate_traits(buf.as_ptr() as usize, 0x94);
+        assert_eq!(traits.len(), 4);
+        assert!(traits.iter().all(|t| t.level == 0));
+    }
+
+    #[test]
+    fn read_player_identity_accepts_readable_snapshot() {
+        // Heap-allocated zeroed snapshot with just the fields a resolvable
+        // identity needs: an inline display name ("Gran"; max_size <= 0xf takes
+        // the inline-buffer path). Zeroed sigil slots are filtered, zeroed
+        // is_online/party_index pass the bounds checks.
+        let mut snapshot = vec![0u8; std::mem::size_of::<SigilList>()];
+        snapshot[0x208..0x20C].copy_from_slice(b"Gran");
+        snapshot[0x218..0x220].copy_from_slice(&4usize.to_le_bytes()); // used_size
+        snapshot[0x220..0x228].copy_from_slice(&0xfusize.to_le_bytes()); // max_size
+
+        let identity = unsafe { read_player_identity(snapshot.as_ptr()) }
+            .expect("a readable snapshot with a name must still resolve");
+        assert_eq!(identity.display_name.as_bytes(), b"Gran");
+        assert_eq!(identity.party_index, 0);
+        assert!(!identity.is_online);
+        assert!(identity.sigils.is_empty());
+    }
 }

@@ -484,6 +484,8 @@ mod tests {
             weapon_key: String::new(),
             master_level: 0,
             skillboard: Vec::new(),
+            stats: None,
+            weapon_state: None,
             is_online: false,
             weapon_info: None,
             overmastery_info: None,

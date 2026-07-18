@@ -180,24 +180,39 @@ pub fn actor_idx(actor_ptr: *const usize) -> u32 {
 
 // Returns the parent entity of the source entity if necessary.
 #[inline(always)]
-pub fn get_source_parent(source_type_id: u32, source: *const usize) -> Option<(u32, u32)> {
+pub fn get_source_parent(
+    source_type_id: u32,
+    source: *const usize,
+) -> Option<(u32, u32, *const usize)> {
     match source_type_id {
         // Pl0700Ghost -> Pl0700
         0x2AF678E8 => {
             let parent_instance = parent_specified_instance_at(source, 0xE48)?;
 
-            Some((actor_type_id(parent_instance), actor_idx(parent_instance)))
+            Some((
+                actor_type_id(parent_instance),
+                actor_idx(parent_instance),
+                parent_instance,
+            ))
         }
         // Pl0700GhostSatellite -> Pl0700
         0x8364C8BC => {
             let parent_instance = parent_specified_instance_at(source, 0x508)?;
 
-            Some((actor_type_id(parent_instance), actor_idx(parent_instance)))
+            Some((
+                actor_type_id(parent_instance),
+                actor_idx(parent_instance),
+                parent_instance,
+            ))
         }
         // Wp1890: Cagliostro's Ouroboros Dragon Sled -> Pl1800
         0xC9F45042 => {
             let parent_instance = parent_specified_instance_at(source, 0x578)?;
-            Some((actor_type_id(parent_instance), actor_idx(parent_instance)))
+            Some((
+                actor_type_id(parent_instance),
+                actor_idx(parent_instance),
+                parent_instance,
+            ))
         }
         // Pl2000: Id's Dragon Form -> Pl1900
         0xF5755C0E => {
@@ -205,20 +220,46 @@ pub fn get_source_parent(source_type_id: u32, source: *const usize) -> Option<(u
                 parent_specified_instance_at(source, ID_DRAGON_PARENT_ENTITY_OFFSET)?;
 
             let parent_idx = diag::read_ptr_guarded(parent_instance as usize, 0x170)? as u32;
-            Some((ID_HUMAN_TYPE, parent_idx))
+            Some((ID_HUMAN_TYPE, parent_idx, parent_instance))
         }
         // Wp2290: Seofon's Avatar
         0x5B1AB457 => {
             let parent_instance = parent_specified_instance_at(source, 0x500)?;
-            Some((actor_type_id(parent_instance), actor_idx(parent_instance)))
+            Some((
+                actor_type_id(parent_instance),
+                actor_idx(parent_instance),
+                parent_instance,
+            ))
         }
         // Pl0600PlantRose
         0x69C0CA71 => {
             let parent_instance = parent_specified_instance_at(source, 0x7E0)?;
-            Some((actor_type_id(parent_instance), actor_idx(parent_instance)))
+            Some((
+                actor_type_id(parent_instance),
+                actor_idx(parent_instance),
+                parent_instance,
+            ))
         }
         _ => None,
     }
+}
+
+/// The parent-resolved, PLAYER-UNIQUE attribution pair for a source actor:
+/// pets/avatars resolve to their owner first, then the (owner) actor's
+/// embedded-record party slot replaces the character-scoped index when it
+/// resolves (v2.0.2 same-character collapse fix — two players on the same
+/// character share `+0x170`/`+0x1AB40`, so only the slot key separates them).
+/// Non-player sources (enemies) keep their real index.
+pub fn player_keyed_parent(
+    source_type_id: u32,
+    source_idx: u32,
+    source: *const usize,
+) -> (u32, u32) {
+    let (parent_type_id, parent_idx, parent_ptr) = get_source_parent(source_type_id, source)
+        .unwrap_or((source_type_id, source_idx, source));
+
+    let keyed_idx = player::player_slot_key_for_actor(parent_ptr).unwrap_or(parent_idx);
+    (parent_type_id, keyed_idx)
 }
 
 // Returns the specified instance of the parent entity.

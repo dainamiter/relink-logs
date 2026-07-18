@@ -6,7 +6,7 @@ use retour::static_detour;
 
 use crate::{event, process::Process};
 
-use super::{actor_idx, actor_type_id, get_source_parent, globals::SBA_OFFSET};
+use super::{actor_idx, actor_type_id, globals::SBA_OFFSET};
 
 // v2.0.2, decompiler-verified (FUN_140bb8840): the gauge-update function takes ELEVEN
 // arguments — rcx=SBA component*, xmm1=f32 gauge delta, r8d=u32, r9b=u8, then seven stack
@@ -45,11 +45,260 @@ static_detour! {
 // entry 0xbb8840 (sigscan: 1 match). Arity fixed to the decompiler-verified 11 args (see
 // OnSBAUpdateFunc above) — the previous 6-arg declaration corrupted the in-game gauge.
 const ON_HANDLE_SBA_UPDATE_SIG: &str = "48 89 f1 c5 f8 28 ce 41 89 d8 e8 $ { ' } c4 c1 78 2e f8";
+
+// ---------------------------------------------------------------------------
+// v2.0.2 slot-poll path (remote SBA recovery, derived 2026-07-17)
+//
+// The remote-SBA-update hook's signature AND the SBA_OFFSET global both died in
+// 2.0.2 (log: "Could not find on_remote_sba_update" / "Could not find sba
+// offset"), so remote players' gauges are invisible in online lobbies. Instead
+// of chasing the network handler, replicate how the game's own party-wide SBA
+// appliers (FUN_141b0dd80 / FUN_1431f1f40, xrefs of the verified gauge-update
+// entry 0xbb8840) reach EVERY party member's gauge:
+//
+//   handle_i  = DAT_147036{7f0,808,820,838}      (4 party-slot entity handles,
+//               0x18 stride: {u32 index+1, pad, entity*, u64 id})
+//   validate    against the entity table DAT_1470214e8 (+0x20 entity array,
+//               +0x48 id array, both indexed by index-1)   [FUN_1406d2490]
+//   specified = *(entity + 0x70)
+//   component = std-map-find(specified + 0xC0, type_id)    [FUN_140936870]
+//               where type_id = DAT_147ab3f50 (runtime static-init counter;
+//               its _Init_thread guard at +0x54 reads -1 once initialized)
+//   gauge     = *(f32*)(component + 0x7C)   (same field the local update hook
+//               reads; component+0x10 = specified instance backref)
+//
+// All of it is plain data walking — replicated below with guarded reads, no
+// game code called. SBAPOLL probe first; production events once live-verified.
+// ---------------------------------------------------------------------------
+const SBA_SLOT_HANDLES_RVA: usize = 0x70367f0;
+const SBA_SLOT_HANDLE_STRIDE: usize = 0x18;
+const ENTITY_TABLE_RVA: usize = 0x70214e8;
+const SBA_COMPONENT_TYPE_RVA: usize = 0x7ab3f50;
+/// Session-mode global: `DAT_147c54810` is a pointer; the game's own online checks
+/// read `*(int*)(ptr + 4) == 3` (seen in FUN_143029580 and the result-screen router
+/// decompiles). Logged per poll to mark the online→offline transition an AFK
+/// conversion causes — the embedded records do NOT flip (2026-07-18 run: allies
+/// still read `online=1` during the offline tail), so this global is the candidate
+/// production signal for "currently an online lobby".
+#[cfg(feature = "hookdiag")]
+const SESSION_MODE_PTR_RVA: usize = 0x7c54810;
 const ON_ATTEMPT_SBA_SIG: &str = "e8 $ { ' } 48 8d 8e ? ? ff ff c7 44 24 38 00 00 80 3f";
 const ON_CHECK_SBA_COLLISION_SIG: &str = "e8 $ { ' } 84 c0 0f 85 f0 00 00 ? 8b 8e ? ? ff ff";
 const ON_CONTINUE_SBA_CHAIN_SIG: &str = "e8 $ { ' } 48 8b 53 ? 48 8d 82 ? ? ? ?";
 const ON_HANDLE_REMOTE_SBA_UPDATE_SIG: &str =
     "48 8b 8f ? ? ? ? 4c 89 e2 e8 $ { ' } e9 ? ? ? ? 48 81 c7 ? ? ? ? 48 89 f9";
+
+/// MSVC `std::map<u32, ptr>` find, replicating the game's component-by-type
+/// lookup FUN_140936870 (main tree only; the fallback tree behind the spinlock
+/// is skipped — a miss is just a skipped poll tick). Node layout: left @ +0x00,
+/// right @ +0x10, is_nil @ +0x19, key @ +0x20, value @ +0x28; head node at
+/// map+0x10, root at head+0x08. Guarded reads, bounded depth.
+fn game_stdmap_find(map: usize, key: u32) -> Option<usize> {
+    use crate::hooks::diag::{read_ptr_guarded, read_u32_guarded};
+
+    let head = read_ptr_guarded(map, 0x10)?;
+    let mut node = read_ptr_guarded(head, 0x08)?;
+    let mut best = head;
+    for _ in 0..64 {
+        // is_nil byte at +0x19 (read via the u32 at +0x18)
+        if (read_u32_guarded(node, 0x18) >> 8) & 0xFF != 0 {
+            break;
+        }
+        if key <= read_u32_guarded(node, 0x20) {
+            best = node;
+            node = read_ptr_guarded(node, 0x00)?;
+        } else {
+            node = read_ptr_guarded(node, 0x10)?;
+        }
+    }
+    if best != head && read_u32_guarded(best, 0x20) <= key {
+        read_ptr_guarded(best, 0x28).filter(|v| *v != 0)
+    } else {
+        None
+    }
+}
+
+/// hookdiag: poll all four party slots' SBA gauges via the slot-handle table
+/// (see the module comment above) and log one `SBAPOLL` line per resolvable
+/// slot, including the actor's embedded-record identity so gauge values are
+/// attributable per player even when two players run the same character.
+/// Called from the (working, local) gauge-update hook — rate-limited.
+#[cfg(feature = "hookdiag")]
+fn log_sba_slot_poll() {
+    use crate::hooks::diag::{read_f32_guarded, read_ptr_guarded, read_u32_guarded, MODULE_BASE};
+    use std::sync::atomic::{AtomicU32, Ordering as AtomicOrdering};
+
+    static CALLS: AtomicU32 = AtomicU32::new(0);
+    let call = CALLS.fetch_add(1, AtomicOrdering::Relaxed);
+    if call >= 8 && call % 64 != 0 {
+        return;
+    }
+
+    let base = MODULE_BASE.load(AtomicOrdering::Relaxed);
+    if base == 0 {
+        return;
+    }
+
+    // The component-type id is assigned by a C++ static-init counter at
+    // runtime. Ghidra (FUN_1406d2490 decompile, 2026-07-18): the guard dword at
+    // +0x54 follows the MSVC _Init_thread protocol — 0 = never initialized,
+    // -1 = initialization IN PROGRESS, and on completion _Init_thread_footer
+    // stamps it with the global init epoch (which STARTS at 0x80000000, so an
+    // initialized guard reads 0x8000xxxx, e.g. the live-observed 0x800016e8).
+    // The old `guard == -1` test was exactly backwards and made every poll bail.
+    let type_guard = read_u32_guarded(base, SBA_COMPONENT_TYPE_RVA + 4);
+    let type_id = read_u32_guarded(base, SBA_COMPONENT_TYPE_RVA);
+    if type_guard == 0 || type_guard == 0xFFFF_FFFF {
+        log::info!("SBAPOLL type-id not initialized (guard={type_guard:#x})");
+        return;
+    }
+
+    let Some(entity_table) = read_ptr_guarded(base, ENTITY_TABLE_RVA) else {
+        return;
+    };
+
+    for slot in 0..4usize {
+        let handle = base + SBA_SLOT_HANDLES_RVA + slot * SBA_SLOT_HANDLE_STRIDE;
+        let index_plus_1 = read_u32_guarded(handle, 0x00);
+        if index_plus_1 == 0 {
+            continue;
+        }
+        let Some(entity) = read_ptr_guarded(handle, 0x08) else {
+            continue;
+        };
+        let id = read_ptr_guarded(handle, 0x10).unwrap_or(0);
+
+        // Validate the handle against the entity table like FUN_1406d2490 does.
+        let idx = (index_plus_1 - 1) as usize;
+        let ids = read_ptr_guarded(entity_table, 0x48).unwrap_or(0);
+        let ents = read_ptr_guarded(entity_table, 0x20).unwrap_or(0);
+        let id_ok = ids != 0 && read_ptr_guarded(ids, idx * 8) == Some(id);
+        let ent_ok = ents != 0 && read_ptr_guarded(ents, idx * 8) == Some(entity);
+        if !id_ok || !ent_ok || entity == 0 {
+            log::info!("SBAPOLL slot={slot} stale handle (idx={index_plus_1} id_ok={id_ok} ent_ok={ent_ok})");
+            continue;
+        }
+
+        let Some(specified) = read_ptr_guarded(entity, 0x70).filter(|p| *p != 0) else {
+            continue;
+        };
+        let Some(component) = game_stdmap_find(specified + 0xC0, type_id) else {
+            log::info!("SBAPOLL slot={slot} specified={specified:#x} component MISS (type_id={type_id:#x})");
+            continue;
+        };
+        let gauge = read_f32_guarded(component, 0x7C).unwrap_or(f32::NAN);
+        let backref = read_ptr_guarded(component, 0x10).unwrap_or(0);
+        let idx170 = read_u32_guarded(specified, 0x170);
+        // Session mode (see SESSION_MODE_PTR_RVA): 3 = online per the game's own
+        // checks; expect it to CHANGE when an AFK conversion drops the lobby offline.
+        let session_mode = read_ptr_guarded(base, SESSION_MODE_PTR_RVA)
+            .map(|p| read_u32_guarded(p, 4) as i64)
+            .unwrap_or(-1);
+        let (party, online, name) = match super::player::actor_embedded_identity(specified) {
+            Some((party, online, name)) => (party as i32, online as i32, name),
+            None => (-1, -1, "<unresolved>".to_string()),
+        };
+        log::info!(
+            "SBAPOLL t={} slot={slot} entity={entity:#x} specified={specified:#x} comp={component:#x} \
+             backref={backref:#x} id={id:#x} gauge={gauge:.1} idx170={idx170:#x} mode={session_mode} \
+             party={party} online={online} name={name}",
+            crate::hooks::diag::ms(),
+        );
+    }
+}
+
+/// Last emitted gauge per party slot, so the per-tick poll only emits real
+/// changes (keeps event volume sane at the gauge hook's firing rate). -1.0 =
+/// never seen, so the first resolvable poll emits the current value.
+static LAST_SLOT_GAUGE: std::sync::Mutex<[f32; 4]> = std::sync::Mutex::new([-1.0; 4]);
+
+/// PRODUCTION remote-SBA recovery (Ghidra-derived 2026-07-17/18, live-verified
+/// via the SBAPOLL probe on an online lobby): walk the game's own four
+/// party-slot entity handles to each member's SBA component and emit slot-keyed
+/// gauge events. This replaces the per-entity emission of the (local-only)
+/// gauge-update hook — online, that hook fires only for the local player, while
+/// this poll reads every member's (synced) gauge. Slot-keyed so the parser's
+/// party rows join damage, SBA and stun on the same per-player index.
+///
+/// Every read is SEH-guarded; a failed step just skips that slot this tick.
+fn poll_slots_and_emit(tx: &event::Tx) {
+    use crate::hooks::diag::{read_f32_guarded, read_ptr_guarded, read_u32_guarded, MODULE_BASE};
+    use std::sync::atomic::Ordering as AtomicOrdering;
+
+    let base = MODULE_BASE.load(AtomicOrdering::Relaxed);
+    if base == 0 {
+        return;
+    }
+
+    // Trust the component-type id only once its _Init_thread guard shows the
+    // init completed (0 = never ran, -1 = in progress, epoch stamp = done).
+    let type_guard = read_u32_guarded(base, SBA_COMPONENT_TYPE_RVA + 4);
+    if type_guard == 0 || type_guard == 0xFFFF_FFFF {
+        return;
+    }
+    let type_id = read_u32_guarded(base, SBA_COMPONENT_TYPE_RVA);
+
+    let Some(entity_table) = read_ptr_guarded(base, ENTITY_TABLE_RVA) else {
+        return;
+    };
+    // try_lock: the gauge hook can fire from the game thread only, but never
+    // risk blocking it on a poisoned/contended lock.
+    let Ok(mut last) = LAST_SLOT_GAUGE.try_lock() else {
+        return;
+    };
+
+    for slot in 0..4usize {
+        let handle = base + SBA_SLOT_HANDLES_RVA + slot * SBA_SLOT_HANDLE_STRIDE;
+        let index_plus_1 = read_u32_guarded(handle, 0x00);
+        if index_plus_1 == 0 {
+            continue;
+        }
+        let Some(entity) = read_ptr_guarded(handle, 0x08).filter(|e| *e != 0) else {
+            continue;
+        };
+        let id = read_ptr_guarded(handle, 0x10).unwrap_or(0);
+
+        // Validate the handle against the entity table like FUN_1406d2490 does.
+        let idx = (index_plus_1 - 1) as usize;
+        let ids = read_ptr_guarded(entity_table, 0x48).unwrap_or(0);
+        let ents = read_ptr_guarded(entity_table, 0x20).unwrap_or(0);
+        if ids == 0
+            || ents == 0
+            || read_ptr_guarded(ids, idx * 8) != Some(id)
+            || read_ptr_guarded(ents, idx * 8) != Some(entity)
+        {
+            continue;
+        }
+
+        let Some(specified) = read_ptr_guarded(entity, 0x70).filter(|p| *p != 0) else {
+            continue;
+        };
+        let Some(component) = game_stdmap_find(specified + 0xC0, type_id) else {
+            continue;
+        };
+        let Some(gauge) = read_f32_guarded(component, 0x7C).filter(|g| g.is_finite()) else {
+            continue;
+        };
+
+        let previous = last[slot];
+        if previous >= 0.0 && (gauge - previous).abs() < 0.05 {
+            continue;
+        }
+        last[slot] = gauge;
+
+        let actor_index = super::player::slot_key(slot as u8);
+        if gauge == 0.0 && previous > 0.0 {
+            let _ = tx.send(Message::OnPerformSBA(protocol::OnPerformSBAEvent {
+                actor_index,
+            }));
+        }
+        let _ = tx.send(Message::OnUpdateSBA(protocol::OnUpdateSBAEvent {
+            actor_index,
+            sba_value: gauge,
+            sba_added: (gauge - previous.max(0.0)).max(0.0),
+        }));
+    }
+}
 
 /// Gets called when your SBA gauge value needs to update with a given value.
 #[derive(Clone)]
@@ -98,41 +347,39 @@ impl OnHandleSBAUpdateHook {
         a10: u8,
         a11: u8,
     ) -> usize {
-        // v2.0.2: [a1+0x10] is the actor's specified-instance pointer (decompiler-verified
-        // vtable object), so we no longer need the SBA_OFFSET global to recover the entity.
-        let entity_ptr = unsafe { a1.byte_add(0x10).read() } as *const usize;
-
-        let source_idx = actor_idx(entity_ptr);
-        let source_type_id = actor_type_id(entity_ptr);
-        let (_, source_parent_idx) =
-            get_source_parent(source_type_id, entity_ptr).unwrap_or((source_type_id, source_idx));
-
-        let sba_value_ptr = unsafe { a1.byte_add(0x7C) } as *const f32;
-        let old_sba_value = unsafe { sba_value_ptr.read() };
+        // Online-recovery probes: whose gauge is this local update for (SBAUPD),
+        // and what do all four slot gauges read right now (SBAPOLL)?
+        #[cfg(feature = "hookdiag")]
+        {
+            use std::sync::atomic::{AtomicU32, Ordering as AtomicOrdering};
+            static UPD: AtomicU32 = AtomicU32::new(0);
+            let n = UPD.fetch_add(1, AtomicOrdering::Relaxed);
+            if n < 12 || n % 256 == 0 {
+                // v2.0.2: [a1+0x10] is the actor's specified-instance pointer
+                // (decompiler-verified vtable object).
+                let entity_ptr = unsafe { a1.byte_add(0x10).read() } as *const usize;
+                let source_type_id = actor_type_id(entity_ptr);
+                let (party, online, name) =
+                    match super::player::actor_embedded_identity(entity_ptr as usize) {
+                        Some((party, online, name)) => (party as i32, online as i32, name),
+                        None => (-1, -1, "<unresolved>".to_string()),
+                    };
+                log::info!(
+                    "SBAUPD comp={:#x} specified={:#x} type={source_type_id:#010x} party={party} online={online} name={name}",
+                    a1 as usize,
+                    entity_ptr as usize,
+                );
+            }
+            log_sba_slot_poll();
+        }
 
         let ret = unsafe { OnSBAUpdate.call(a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11) };
 
-        let new_sba_value = unsafe { sba_value_ptr.read() };
-        let sba_added = f32::max(new_sba_value - old_sba_value, 0.0);
-
-        if new_sba_value == 0.0 {
-            #[cfg(feature = "console")]
-            println!("on perform sba: player_index={}", source_parent_idx);
-
-            let payload = Message::OnPerformSBA(protocol::OnPerformSBAEvent {
-                actor_index: source_parent_idx,
-            });
-
-            let _ = self.tx.send(payload);
-        } else {
-            let payload = Message::OnUpdateSBA(protocol::OnUpdateSBAEvent {
-                actor_index: source_parent_idx,
-                sba_value: new_sba_value,
-                sba_added,
-            });
-
-            let _ = self.tx.send(payload);
-        }
+        // Production: after the game applied this (local) gauge update, poll ALL
+        // FOUR party slots and emit slot-keyed gauge events. Replaces the old
+        // per-entity emission — that only ever covered the local player online,
+        // and its actor-idx key merged same-character players.
+        poll_slots_and_emit(&self.tx);
 
         ret
     }
@@ -190,7 +437,7 @@ impl OnAttemptSBAHook {
         let source_idx = actor_idx(entity_ptr);
         let source_type_id = actor_type_id(entity_ptr);
         let (_, source_parent_idx) =
-            get_source_parent(source_type_id, entity_ptr).unwrap_or((source_type_id, source_idx));
+            super::player_keyed_parent(source_type_id, source_idx, entity_ptr);
 
         #[cfg(feature = "console")]
         println!("on sba attempt: player_index={}", source_parent_idx);
@@ -248,8 +495,8 @@ impl OnCheckSBACollisionHook {
 
             let source_idx = actor_idx(entity_ptr);
             let source_type_id = actor_type_id(entity_ptr);
-            let (_, source_parent_idx) = get_source_parent(source_type_id, entity_ptr)
-                .unwrap_or((source_type_id, source_idx));
+            let (_, source_parent_idx) =
+                super::player_keyed_parent(source_type_id, source_idx, entity_ptr);
 
             #[cfg(feature = "console")]
             println!("on perform sba: player_index={}", source_parent_idx);
@@ -309,8 +556,8 @@ impl OnContinueSBAChainHook {
 
         let source_idx = actor_idx(player_entity);
         let source_type_id = actor_type_id(player_entity);
-        let (_, source_parent_idx) = get_source_parent(source_type_id, player_entity)
-            .unwrap_or((source_type_id, source_idx));
+        let (_, source_parent_idx) =
+            super::player_keyed_parent(source_type_id, source_idx, player_entity);
 
         let payload = Message::OnContinueSBAChain(protocol::OnContinueSBAChainEvent {
             actor_index: source_parent_idx,
@@ -375,8 +622,8 @@ impl OnRemoteSBAUpdateHook {
 
         let source_idx = actor_idx(player_entity);
         let source_type_id = actor_type_id(player_entity);
-        let (_, source_parent_idx) = get_source_parent(source_type_id, player_entity)
-            .unwrap_or((source_type_id, source_idx));
+        let (_, source_parent_idx) =
+            super::player_keyed_parent(source_type_id, source_idx, player_entity);
 
         let new_sba_value = unsafe { sba_value_ptr.read() };
         let sba_added = f32::max(new_sba_value - old_sba_value, 0.0);

@@ -240,6 +240,93 @@ impl From<protocol::EquippedSummon> for EquippedSummon {
     }
 }
 
+/// The v2.0.2 record-inline stat block (identity-path recovery). Labels for
+/// `hp`/`attack`/`stun_power`/`power` follow the pre-2.0 `PlayerStats` layout
+/// the block mirrors; `unk_50`/`unk_58` are still unconfirmed slots.
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct RecordStats {
+    pub level: u32,
+    pub hp: u32,
+    pub attack: u32,
+    pub unk_50: u32,
+    pub stun_power: f32,
+    pub unk_58: u32,
+    pub power: u32,
+}
+
+impl From<protocol::RecordStats> for RecordStats {
+    fn from(stats: protocol::RecordStats) -> Self {
+        Self {
+            level: stats.level,
+            hp: stats.hp,
+            attack: stats.attack,
+            unk_50: stats.unk_50,
+            stun_power: stats.stun_power,
+            unk_58: stats.unk_58,
+            power: stats.power,
+        }
+    }
+}
+
+/// One trait id/level pair (wrightstone or innate weapon skill).
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct WeaponTraitPair {
+    pub id: u32,
+    /// 0 when the level is not (yet) known.
+    pub level: u32,
+}
+
+/// The equipped weapon's state (identity-path recovery, live-labeled
+/// 2026-07-17). Every field is `#[serde(default)]` so logs stored by the
+/// short-lived raw-block shape of this struct still deserialize (they carry
+/// `weaponId` plus since-removed raw arrays, which serde ignores).
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct WeaponState {
+    #[serde(default)]
+    pub weapon_id: u32,
+    #[serde(default)]
+    pub exp: u32,
+    #[serde(default)]
+    pub star_level: u32,
+    #[serde(default)]
+    pub plus_marks: u32,
+    #[serde(default)]
+    pub awakening_level: u32,
+    #[serde(default)]
+    pub wrightstone_id: u32,
+    #[serde(default)]
+    pub wrightstone_traits: Vec<WeaponTraitPair>,
+    /// The ACTIVE innate skills (awakening/transcendence upgrades applied).
+    #[serde(default)]
+    pub innate_traits: Vec<WeaponTraitPair>,
+}
+
+impl From<protocol::WeaponState> for WeaponState {
+    fn from(state: protocol::WeaponState) -> Self {
+        let pairs = |v: Vec<protocol::WeaponTraitPair>| {
+            v.into_iter()
+                .map(|t| WeaponTraitPair {
+                    id: t.id,
+                    level: t.level,
+                })
+                .collect()
+        };
+        Self {
+            weapon_id: state.weapon_id,
+            exp: state.exp,
+            star_level: state.star_level,
+            plus_marks: state.plus_marks,
+            awakening_level: state.awakening_level,
+            wrightstone_id: state.wrightstone_id,
+            wrightstone_traits: pairs(state.wrightstone_traits),
+            innate_traits: pairs(state.innate_traits),
+        }
+    }
+}
+
 /// Data for a player in the encounter
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
@@ -277,6 +364,15 @@ pub struct PlayerData {
     /// those stored logs readable.
     #[serde(default)]
     skillboard: Vec<u32>,
+    /// The record-inline stat block (v2.0.2 identity-path recovery). `None` on
+    /// logs recorded before it shipped; `#[serde(default)]` keeps them readable.
+    #[serde(default)]
+    stats: Option<RecordStats>,
+    /// The equipped weapon's save-row snapshot (v2.0.2 identity-path recovery).
+    /// `None` on logs recorded before it shipped; `#[serde(default)]` keeps
+    /// them readable.
+    #[serde(default)]
+    weapon_state: Option<WeaponState>,
     /// Whether this player was an online player or not
     is_online: bool,
     /// Weapon info for this player
@@ -879,6 +975,8 @@ impl Parser {
             weapon_key: String::new(),
             master_level: 0,
             skillboard: Vec::new(),
+            stats: None,
+            weapon_state: None,
             weapon_info: Some(event.weapon_info.into()),
             overmastery_info: Some(event.overmastery_info.into()),
             player_stats: Some(event.player_stats.into()),
@@ -918,6 +1016,8 @@ impl Parser {
                 weapon_key: String::new(),
                 master_level: 0,
                 skillboard: Vec::new(),
+                stats: None,
+                weapon_state: None,
                 is_online: event.is_online,
                 weapon_info: None,
                 overmastery_info: None,
@@ -981,6 +1081,12 @@ impl Parser {
         }
         if !event.skillboard.is_empty() {
             player_data.skillboard = event.skillboard;
+        }
+        if let Some(stats) = event.stats {
+            player_data.stats = Some(stats.into());
+        }
+        if let Some(weapon_state) = event.weapon_state {
+            player_data.weapon_state = Some(weapon_state.into());
         }
 
         // Character level, also town-loadout-only. Fold it into player_stats without
@@ -1699,6 +1805,8 @@ mod tests {
             weapon_key: String::new(),
             master_level: 0,
             skillboard: Vec::new(),
+            stats: None,
+            weapon_state: None,
         }
     }
 

@@ -260,6 +260,91 @@ pub struct PlayerIdentityEvent {
     /// stored logs readable.
     #[serde(default)]
     pub skillboard: Vec<u32>,
+    /// The record's inline stat block (`record+0x5B44..0x5B60`, decompiled from
+    /// the dispatcher `FUN_140a23e70` case-3 fill and the town loadout-apply
+    /// `FUN_1407a1080`: loadout+0x3530..0x3550 maps 1:1 onto it). Field labels
+    /// follow the pre-2.0 `PlayerStats` layout, which the block mirrors
+    /// (level, hp, attack, ?, stun f32, ?, power); pending one live-run
+    /// confirmation against the status screen. `None` when unpopulated;
+    /// `#[serde(default)]` keeps stored logs readable.
+    #[serde(default)]
+    pub stats: Option<RecordStats>,
+    /// The equipped weapon's full state (id, progression, wrightstone and
+    /// active innate traits). Live-labeled 2026-07-17 against the user's
+    /// Hraesvelgr: the record's `+0x5E80` blob (online contexts) carries it at
+    /// blob+0x50, and the per-character save rows
+    /// (`*(DAT_147c24980)+0x129B08` map, 0x190 stride) carry the identical
+    /// struct at row+0x70. `None` when neither source resolves;
+    /// `#[serde(default)]` keeps stored logs readable.
+    #[serde(default)]
+    pub weapon_state: Option<WeaponState>,
+}
+
+/// One trait id/level pair (wrightstone or innate weapon skill).
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct WeaponTraitPair {
+    /// Trait id (`SKILL_*` hash, the `traits` lang namespace).
+    pub id: u32,
+    /// Trait level; 0 when not (yet) known.
+    pub level: u32,
+}
+
+/// The v2.0.2 record-inline stat block. Labels tentative (see
+/// [`PlayerIdentityEvent::stats`]): `hp`/`attack`/`stun_power`/`power` follow
+/// the old `PlayerStats` field order; `unk_50`/`unk_58` are the two slots whose
+/// meaning is still unconfirmed (old layout suggests `unk_50` = the pre-2.0
+/// `unk_0c` filler and `unk_58` = critical rate).
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct RecordStats {
+    /// Character level (`record+0x5B44`).
+    pub level: u32,
+    /// `record+0x5B48` — total/base HP (label pending live confirm).
+    pub hp: u32,
+    /// `record+0x5B4C` — total/base attack (label pending live confirm).
+    pub attack: u32,
+    /// `record+0x5B50` — unknown (town-filled only).
+    pub unk_50: u32,
+    /// `record+0x5B54` — stun power (the block's only float, matching the old
+    /// layout's stun_power f32).
+    pub stun_power: f32,
+    /// `record+0x5B58` — unknown (critical rate candidate).
+    pub unk_58: u32,
+    /// `record+0x5B5C` — total power / power level candidate (town-filled).
+    pub power: u32,
+}
+
+/// The equipped weapon's state (see [`PlayerIdentityEvent::weapon_state`]).
+///
+/// Struct layout in game memory (u32 indices into blob+0x50 / row+0x70,
+/// live-labeled against a maxed Hraesvelgr — Stun Power 20 / ATK 15 /
+/// Provoke 10 wrightstone, Catastrophe Nova / Glass Cannon / DMG Cap /
+/// Sigil Booster innate skills): `[1]` weapon.tbl Key hash (incl. the
+/// transcendence variant, e.g. `WEP_PL2700_06_03`), `[4]` exp, `[5]` uncap
+/// stars, `[6]` plus marks, `[7]` awakening level, `[8..13]` the three
+/// wrightstone `{id, level}` pairs, `[14]` wrightstone item id
+/// (`ITEM_25_####`). Active innate skill ids: blob+0x94 (5 slots,
+/// sentinel-terminated) or, on the save-row path, resolved from the id at
+/// row+0xB4 through the static weapon-skill table `*(DAT_147c24af8)+0x370`.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct WeaponState {
+    /// weapon.tbl Key hash of the equipped weapon (transcendence-variant row).
+    pub weapon_id: u32,
+    /// Current weapon exp.
+    pub exp: u32,
+    /// Uncap star count.
+    pub star_level: u32,
+    /// Plus marks (+0..99).
+    pub plus_marks: u32,
+    /// Awakening level (0..10).
+    pub awakening_level: u32,
+    /// Wrightstone item id (`ITEM_25_####` hash; 0 when none equipped).
+    pub wrightstone_id: u32,
+    /// The wrightstone's up-to-3 trait id/level pairs.
+    pub wrightstone_traits: Vec<WeaponTraitPair>,
+    /// The weapon's ACTIVE innate skills (awakening/transcendence variants
+    /// already applied by the game — these can differ from the base
+    /// weapon-table skills). Levels are 0 until their storage is located.
+    pub innate_traits: Vec<WeaponTraitPair>,
 }
 
 /// Emitted on each Conflux room load. The reception dispatcher rebuilds an
