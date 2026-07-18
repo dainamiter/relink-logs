@@ -24,6 +24,24 @@ static_detour! {
     static ProcessDotEvent: unsafe extern "system" fn(*const usize, *const usize, *const usize, *const usize) -> usize;
 }
 
+/// Per-target budget for the stun_scan window probe (module-scoped so it can be
+/// RESET on quest load). `first_n_per_key` tracks at most 64 distinct keys EVER —
+/// the 2026-07-18 online run proved that town/solo play earlier in the same game
+/// session exhausts all 64 before the online quest starts, so the probe never
+/// sampled the lobby at all. Clearing on each quest load gives every quest a
+/// fresh budget.
+#[cfg(feature = "hookdiag")]
+pub(crate) static STUN_SCAN_PER_TARGET: std::sync::Mutex<Vec<(usize, u32)>> =
+    std::sync::Mutex::new(Vec::new());
+
+/// Reset the stun_scan per-target budget (called from the quest-load hook).
+#[cfg(feature = "hookdiag")]
+pub(crate) fn reset_stun_scan_budget() {
+    if let Ok(mut entries) = STUN_SCAN_PER_TARGET.try_lock() {
+        entries.clear();
+    }
+}
+
 #[derive(Clone)]
 pub struct OnProcessDamageHook {
     tx: event::Tx,
@@ -104,18 +122,24 @@ impl OnProcessDamageHook {
         // Budgeted PER TARGET (a global first-48 burned the whole budget on the
         // opening trash mobs of the 2026-07-15 session and never sampled the boss),
         // hookdiag builds only.
+        //
+        // 2026-07-17 online finding: in a real online lobby the verified +0xB90
+        // accumulator never moves — for ANY player, local included (log 405:
+        // 0 stun events over 2914 hits, vs thousands offline). The window is
+        // widened 0x800..0xE00 -> 0x000..0x1800 to catch an online-mode
+        // accumulator living elsewhere in the instance (cost is fine: the
+        // window is guarded with ONE probe, and tonight's +0xD60 blips show the
+        // interesting region extends below 0x800).
         #[cfg(feature = "hookdiag")]
         let stun_probe_pre = {
-            static PER_TARGET: std::sync::Mutex<Vec<(usize, u32)>> =
-                std::sync::Mutex::new(Vec::new());
-            crate::hooks::diag::first_n_per_key(&PER_TARGET, target_specified_instance_ptr, 24)
-                .then(|| {
-                    crate::hooks::diag::snapshot_f32_window(
-                        target_specified_instance_ptr,
-                        0x800,
-                        0x600,
-                    )
-                })
+            crate::hooks::diag::first_n_per_key(
+                &STUN_SCAN_PER_TARGET,
+                target_specified_instance_ptr,
+                24,
+            )
+            .then(|| {
+                crate::hooks::diag::snapshot_f32_window(target_specified_instance_ptr, 0x000, 0x1800)
+            })
         };
 
         let original_value = unsafe { ProcessDamageEvent.call(a1, a2, a3, a4) };
@@ -124,13 +148,13 @@ impl OnProcessDamageHook {
         if let Some(pre) = stun_probe_pre {
             let post = crate::hooks::diag::snapshot_f32_window(
                 target_specified_instance_ptr,
-                0x800,
-                0x600,
+                0x000,
+                0x1800,
             );
             crate::hooks::diag::log_f32_increases(
                 "stun_scan",
                 target_specified_instance_ptr,
-                0x800,
+                0x000,
                 &pre,
                 &post,
             );
@@ -195,6 +219,20 @@ impl OnProcessDamageHook {
             use std::fmt::Write as _;
             static DIAG_N: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
             if crate::hooks::diag::first_n(&DIAG_N, 500) {
+                // Source identity (2026-07-17): tag each dump with who dealt the
+                // hit, so an online capture can separate remote players' hits
+                // (whose cap/base fields read 0 in log 405) from local ones.
+                let (src_type, src_idx) = match read_ptr_guarded(a2 as usize, 0x18)
+                    .filter(|p| *p != 0)
+                    .and_then(|e| read_ptr_guarded(e, 0x70))
+                    .filter(|p| *p != 0)
+                {
+                    Some(src) => (
+                        actor_type_id(src as *const usize),
+                        actor_idx(src as *const usize),
+                    ),
+                    None => (0, 0),
+                };
                 // read_unaligned throughout: this probe exists to be edited to read arbitrary
                 // (possibly unaligned) offsets while chasing shifted fields after a patch, so a
                 // future non-4-aligned offset must not become UB / fault the game thread.
@@ -214,7 +252,7 @@ impl OnProcessDamageHook {
                     }
                 }
                 log::info!(
-                    "DMGDIAG unk@d0={} dmg@d4={} rate@d8={} rate@dc={} flags@e8={:#x} action@16c={} floor@2b8={} cap@2bc={} precap@2d4={} nonzero: {}",
+                    "DMGDIAG src_type={src_type:#010x} src_idx={src_idx} unk@d0={} dmg@d4={} rate@d8={} rate@dc={} flags@e8={:#x} action@16c={} floor@2b8={} cap@2bc={} precap@2d4={} nonzero: {}",
                     dmg_d0,
                     dmg_d4,
                     rate_d8,

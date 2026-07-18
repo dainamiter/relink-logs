@@ -90,6 +90,16 @@ impl OnLoadQuestHook {
         #[cfg(feature = "console")]
         println!("on load quest state");
 
+        // hookdiag probes budget per QUEST, not per session: the 2026-07-18 online run
+        // proved the one-shot budgets (stun_scan's 64 targets, ARDIAG's 64 actors) get
+        // exhausted by town/solo play before the interesting quest ever loads.
+        #[cfg(feature = "hookdiag")]
+        {
+            super::damage::reset_stun_scan_budget();
+            super::player::reset_ardiag_seen();
+            super::stunnet::reset_budget();
+        }
+
         // Quest-load boundary cut (v2.0.2). The area-enter hook no longer installs, so
         // this is the only reliable between-quest cut point. A quest that ends WITHOUT
         // the type-5 result screen (fail, retire — live-confirmed to emit nothing)
