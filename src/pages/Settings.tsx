@@ -70,7 +70,6 @@ const ChecklistSection = ({
       <Select
         mt="xs"
         searchable
-        limit={50}
         placeholder={addPlaceholder}
         data={checklist.traitOptions(group)}
         value={null}
