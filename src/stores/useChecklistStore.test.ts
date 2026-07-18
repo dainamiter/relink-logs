@@ -49,6 +49,11 @@ describe("useChecklistStore", () => {
     build = useChecklistStore.getState().build;
     expect(build).toHaveLength(13);
     expect(build[build.length - 1].level).toBe(20);
+
+    // Duplicate of a secondary id within a multi-id entry (DMG Cap group): rejected.
+    useChecklistStore.getState().add("build", 0x0151cf9e, 30);
+    build = useChecklistStore.getState().build;
+    expect(build).toHaveLength(13);
   });
 
   it("reset restores the bundled defaults", () => {

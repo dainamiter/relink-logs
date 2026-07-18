@@ -16,7 +16,7 @@ interface ChecklistState {
   setLevel: (group: ChecklistGroup, firstId: number, level: number) => void;
   toggle: (group: ChecklistGroup, firstId: number) => void;
   remove: (group: ChecklistGroup, firstId: number) => void;
-  /** Appends a single-id enabled entry; a trait already in the group is a no-op. */
+  /** Appends a single-id enabled entry; a trait already present in any entry's id group is a no-op. */
   add: (group: ChecklistGroup, traitId: number, level: number) => void;
   reset: () => void;
 }
@@ -57,7 +57,7 @@ export const useChecklistStore = create<ChecklistState>()(
       add: (group, traitId, level) =>
         set((state) =>
           withGroup(state, group, (entries) =>
-            entries.some((entry) => entry.ids[0] === traitId)
+            entries.some((entry) => entry.ids.includes(traitId))
               ? entries
               : [...entries, { ids: [traitId], level, enabled: true }]
           )
