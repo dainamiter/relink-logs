@@ -136,6 +136,9 @@ fn install_panic_hook() {
     }));
 }
 
+// Not in test builds: the ctor would run inside the test process — sigscanning
+// the test binary and creating the app's named pipe are both unwanted there.
+#[cfg(not(test))]
 #[ctor::ctor]
 fn entry() {
     #[cfg(feature = "console")]

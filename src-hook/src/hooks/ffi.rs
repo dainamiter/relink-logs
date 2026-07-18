@@ -197,8 +197,45 @@ impl VBuffer {
             return None;
         }
 
+        // The out-of-line path follows a heap pointer embedded in game memory;
+        // plausible sizes don't make it a valid pointer, so probe before reading.
+        if used_size > 0 && !crate::hooks::diag::readable(bytes_ptr as usize, used_size) {
+            return None;
+        }
+
         let bytes = unsafe { std::slice::from_raw_parts(bytes_ptr, used_size) };
         std::str::from_utf8(bytes).ok()?;
         CString::new(bytes).ok()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // The exact non-pointer value the 2026-07-18 crash dump showed being
+    // dereferenced (two adjacent u32s 0x5b0/0x5b1 read as a "pointer");
+    // unmapped in any normal process.
+    const UNMAPPED_PTR: usize = 0x0000_05b1_0000_05b0;
+
+    #[test]
+    fn checked_raw_rejects_unmapped_heap_buffer() {
+        // A string header whose sizes pass the plausibility checks but whose
+        // heap pointer (max_size > 0xf selects the out-of-line path) is garbage.
+        let header: Box<[usize; 4]> = Box::new([UNMAPPED_PTR, 0, 8, 0x20]);
+        let vbuffer = VBuffer(header.as_ptr() as *const usize);
+        assert!(vbuffer.checked_raw().is_none());
+    }
+
+    #[test]
+    fn checked_raw_reads_inline_buffer() {
+        // max_size <= 0xf keeps the bytes inline in the header itself.
+        let mut header: Box<[usize; 4]> = Box::new([0, 0, 4, 0xf]);
+        header[0] = usize::from_le_bytes(*b"Gran\0\0\0\0");
+        let vbuffer = VBuffer(header.as_ptr() as *const usize);
+        assert_eq!(
+            vbuffer.checked_raw().expect("inline name must resolve").as_bytes(),
+            b"Gran"
+        );
     }
 }

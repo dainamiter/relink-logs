@@ -75,7 +75,7 @@ pub static MODULE_BASE: AtomicUsize = AtomicUsize::new(0);
 static START: OnceLock<Instant> = OnceLock::new();
 
 #[cfg(feature = "hookdiag")]
-fn ms() -> u128 {
+pub(crate) fn ms() -> u128 {
     START.get_or_init(Instant::now).elapsed().as_millis()
 }
 
@@ -161,8 +161,7 @@ pub fn log_callers_depth(label: &str, max: usize) {
 /// Compiled in all builds: the real Conflux emitters (endless.rs / quest.rs) use
 /// `read_u32_guarded` at runtime to read the reception-flow type-hash and buff ids,
 /// so this guard must exist without `hookdiag`.
-#[allow(dead_code)] // only reached via read_u32_guarded, which some builds don't call
-fn readable(addr: usize, len: usize) -> bool {
+pub(crate) fn readable(addr: usize, len: usize) -> bool {
     // Deprecated-but-ubiquitous kernel32 export; not exposed by the `windows` crate.
     #[link(name = "kernel32")]
     extern "system" {
