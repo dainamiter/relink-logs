@@ -2,7 +2,7 @@ import { useMeterSettingsStore } from "@/stores/useMeterSettingsStore";
 import "./Logs.css";
 
 import { AppShell, Button, Group, Text } from "@mantine/core";
-import { Bug, Flag, Gear, GithubLogo, House, Translate } from "@phosphor-icons/react";
+import { Bug, Flag, Gear, GithubLogo, House, Translate, Wrench } from "@phosphor-icons/react";
 import { getVersion } from "@tauri-apps/api/app";
 import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/api/shell";
@@ -50,7 +50,8 @@ const Layout = () => {
   const navigate = useNavigate();
   const { pathname } = useLocation();
   const confluxActive = pathname.startsWith("/logs/conflux");
-  const questsActive = !confluxActive && !pathname.startsWith("/logs/settings");
+  const questsActive =
+    !confluxActive && !pathname.startsWith("/logs/settings") && !pathname.startsWith("/logs/toolbox");
   const onListPage = pathname === "/logs" || confluxActive;
 
   useEffect(() => {
@@ -109,6 +110,16 @@ const Layout = () => {
                 onClick={() => open(`${GITHUB_URL}/issues/new?template=translation.yml`)}
               >
                 {t("ui.submit-missing-label")}
+              </Button>
+              <Button
+                variant="subtle"
+                color="gray"
+                size="compact-sm"
+                leftSection={<Wrench size="1rem" />}
+                component={Link}
+                to="/logs/toolbox"
+              >
+                Toolbox
               </Button>
               <Button
                 variant="subtle"
