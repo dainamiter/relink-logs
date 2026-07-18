@@ -167,8 +167,26 @@ pub struct SynthesisSearchResponse {
     pub rng_unpredictable: bool,
 }
 
-/// Test every unordered pair whose combined traits could contain the queried
-/// ones; return (matches up to `cap`, pairs actually predicted, total matches).
+/// A sigil can be used in synthesis iff it has two real traits, both at level
+/// 11 or higher. Confirmed live (2026-07-18): this is exactly the game's
+/// selectable pool — there is no separate "legendary" rarity gate.
+pub fn is_eligible(s: &SynthesisSigil) -> bool {
+    s.trait1 != EMPTY_TRAIT
+        && s.trait2 != EMPTY_TRAIT
+        && s.trait1_level >= 11
+        && s.trait2_level >= 11
+}
+
+/// The prediction-relevant identity of a sigil. Two sigils with the same key
+/// always synthesize identically (the instance uid does not affect the result,
+/// confirmed live), so search() collapses them to one representative.
+fn dedup_key(s: &SynthesisSigil) -> (u32, u32, u32, u32, i32) {
+    (s.trait1, s.trait1_level, s.trait2, s.trait2_level, s.record_level)
+}
+
+/// Test every unordered pair of ELIGIBLE, distinct-identity sigils whose
+/// combined traits could contain the queried ones; return (matches up to
+/// `cap`, pairs actually predicted, total matches).
 pub fn search(
     snap: &SynthesisSnapshot,
     q: &SynthesisQuery,
@@ -189,11 +207,21 @@ pub fn search(
         }
     };
 
+    // Only eligible sigils can be synthesized, and identical-identity copies
+    // predict the same result, so collapse them to one representative each.
+    let mut seen = std::collections::HashSet::new();
+    let pool: Vec<&SynthesisSigil> = snap
+        .sigils
+        .iter()
+        .filter(|s| is_eligible(s))
+        .filter(|s| seen.insert(dedup_key(s)))
+        .collect();
+
     let mut matches = Vec::new();
     let (mut tested, mut total) = (0u64, 0u64);
-    for i in 0..snap.sigils.len() {
-        for j in (i + 1)..snap.sigils.len() {
-            let (a, b) = (&snap.sigils[i], &snap.sigils[j]);
+    for i in 0..pool.len() {
+        for j in (i + 1)..pool.len() {
+            let (a, b) = (pool[i], pool[j]);
             if !has(a, q.trait1) && !has(b, q.trait1) {
                 continue;
             }
@@ -321,50 +349,80 @@ mod tests {
         assert_eq!(shifted.trait2, Some(0x300));
     }
 
+    /// Two eligible sigils A(0x100,0x300) + B(0x200,0x400), all traits lvl 11,
+    /// at rng 987654321 seed 42 -> predict() = (0x200, 0x300) not lucky
+    /// (independent Python reference). trait_to_item maps the slot-1 trait.
     fn search_snap() -> SynthesisSnapshot {
         let mut snap = SynthesisSnapshot {
-            rng_state: 123_456_789,
+            rng_state: 987_654_321,
             seed_counter: 42,
             ..Default::default()
         };
-        snap.trait_to_item.insert(0x300, 0x9999);
+        snap.trait_to_item.insert(0x200, 0x9999);
         snap.sigils = vec![
-            sigil(1, 0x100, 11, 0x200, 15, 5),
-            sigil(2, 0x300, 12, EMPTY_TRAIT, 0, 7),
-            sigil(3, 0x500, 10, 0x600, 10, 4),
+            sigil(1, 0x100, 11, 0x300, 11, 5),
+            sigil(2, 0x200, 11, 0x400, 11, 7),
         ];
         snap
     }
 
-    /// Pair (1,2) is the reference fixture -> predicts (0x300, 0x200).
+    /// The one eligible pair (1,2) predicts (0x200, 0x300).
     #[test]
     fn search_finds_matching_pair() {
         let snap = search_snap();
         let q = SynthesisQuery {
-            trait1: 0x300,
-            trait2: Some(0x200),
+            trait1: 0x200,
+            trait2: Some(0x300),
             any_order: false,
             require_lucky: false,
         };
         let (matches, tested, total) = search(&snap, &q, 100);
+        assert_eq!(tested, 1);
         assert_eq!(total, 1);
         assert_eq!(matches.len(), 1);
         assert_eq!(matches[0].sigil_a.uid, 1);
         assert_eq!(matches[0].sigil_b.uid, 2);
         assert_eq!(matches[0].result_sigil_id, Some(0x9999));
-        // pairs (1,3) and (2,3) can't produce 0x300+0x200 together; only (1,2) is tested
+    }
+
+    /// Ineligible sigils (1-trait or below level 11) are never paired.
+    #[test]
+    fn search_skips_ineligible_sigils() {
+        let mut snap = search_snap();
+        // A 1-trait sigil and a below-level-11 2-trait sigil; neither is usable.
+        snap.sigils.push(sigil(3, 0x200, 15, EMPTY_TRAIT, 0, 9));
+        snap.sigils.push(sigil(4, 0x100, 10, 0x400, 11, 9)); // trait1 below 11
+        let q = SynthesisQuery { trait1: 0x200, trait2: None, any_order: true, require_lucky: false };
+        let (_m, tested, _total) = search(&snap, &q, 100);
+        // Only the single eligible pair (1,2) is ever predicted.
         assert_eq!(tested, 1);
+    }
+
+    /// Identical-identity copies collapse to one representative (uid ignored).
+    #[test]
+    fn search_dedups_identical_sigils() {
+        let mut snap = search_snap();
+        // Three extra copies of sigil 1 (same traits/levels/rec, different uid).
+        snap.sigils.push(sigil(10, 0x100, 11, 0x300, 11, 5));
+        snap.sigils.push(sigil(11, 0x100, 11, 0x300, 11, 5));
+        snap.sigils.push(sigil(12, 0x100, 11, 0x300, 11, 5));
+        let q = SynthesisQuery { trait1: 0x200, trait2: Some(0x300), any_order: false, require_lucky: false };
+        let (matches, tested, total) = search(&snap, &q, 100);
+        // Still just one distinct pair, one match — not four.
+        assert_eq!(tested, 1);
+        assert_eq!(total, 1);
+        assert_eq!(matches.len(), 1);
     }
 
     /// Exact order excludes the swapped outcome; any_order accepts it.
     #[test]
     fn search_order_toggle() {
         let snap = search_snap();
-        let exact = SynthesisQuery { trait1: 0x200, trait2: Some(0x300), any_order: false, require_lucky: false };
+        let exact = SynthesisQuery { trait1: 0x300, trait2: Some(0x200), any_order: false, require_lucky: false };
         let (m, _, total) = search(&snap, &exact, 100);
         assert_eq!(total, 0);
         assert!(m.is_empty());
-        let any = SynthesisQuery { trait1: 0x200, trait2: Some(0x300), any_order: true, require_lucky: false };
+        let any = SynthesisQuery { trait1: 0x300, trait2: Some(0x200), any_order: true, require_lucky: false };
         let (m, _, total) = search(&snap, &any, 100);
         assert_eq!(total, 1);
         assert_eq!(m.len(), 1);
@@ -374,7 +432,7 @@ mod tests {
     #[test]
     fn search_require_lucky() {
         let snap = search_snap();
-        let q = SynthesisQuery { trait1: 0x300, trait2: Some(0x200), any_order: false, require_lucky: true };
+        let q = SynthesisQuery { trait1: 0x200, trait2: Some(0x300), any_order: false, require_lucky: true };
         let (m, _, total) = search(&snap, &q, 100);
         assert_eq!(total, 0);
         assert!(m.is_empty());
@@ -404,20 +462,20 @@ mod tests {
     /// cap bounds the returned matches but `total` keeps counting.
     #[test]
     fn search_cap_truncates_matches_not_total() {
-        // Three sigils all carrying trait 0x100 -> pairs (1,2),(1,3),(2,3) all
-        // feed predict(); with trait2=None the query matches any pair whose
-        // result leads with 0x100. Pick a query that matches >= 2 of them.
+        // Three ELIGIBLE sigils sharing trait 0x100 with distinct second traits
+        // (so dedup keeps all three) -> pairs (1,2),(1,3),(2,3) all feed
+        // predict(); at rng 555 every pair leads with 0x100, so a trait2=None
+        // query on 0x100 matches all three (Python reference).
         let mut snap = SynthesisSnapshot {
-            rng_state: 555,
+            rng_state: 3,
             seed_counter: 1,
             ..Default::default()
         };
         snap.sigils = vec![
-            sigil(1, 0x100, 10, EMPTY_TRAIT, 0, 1),
-            sigil(2, 0x100, 10, EMPTY_TRAIT, 0, 1),
-            sigil(3, 0x100, 10, EMPTY_TRAIT, 0, 1),
+            sigil(1, 0x100, 11, 0x110, 11, 1),
+            sigil(2, 0x100, 11, 0x120, 11, 1),
+            sigil(3, 0x100, 11, 0x130, 11, 1),
         ];
-        // Every pair's only candidate is 0x100 -> trait1 is always 0x100.
         let q = SynthesisQuery { trait1: 0x100, trait2: None, any_order: false, require_lucky: false };
         let (all, tested, total) = search(&snap, &q, 100);
         assert_eq!(tested, 3);
