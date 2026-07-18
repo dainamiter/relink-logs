@@ -1,5 +1,5 @@
 //! Offline maintenance tool: scan saved encounters in logs.db for player skills
-//! that have no name in en/ui.json and stub each with a `"TODO: Skill <id>"`
+//! that have no name in en/ui.json and stub each with a `"Skill <id>"`
 //! placeholder under its character block. Add-only + idempotent.
 //!
 //! Run from the repo root:

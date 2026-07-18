@@ -55,10 +55,10 @@ fn character_key(character: CharacterType) -> Option<String> {
     Some(character.to_string())
 }
 
-/// The placeholder written for an unmapped skill. Marked + greppable, distinct
-/// from the runtime `"Skill {{id}}"` fallback.
+/// The placeholder written for an unmapped skill. Shows the id so users can
+/// see exactly which key needs a real name and submit it in a PR.
 pub fn placeholder_for(id: u32) -> String {
-    format!("TODO: Skill {id}")
+    format!("Skill {id}")
 }
 
 /// True if `skills` already resolves a name for `key` via the getSkillName chain:
@@ -75,7 +75,7 @@ fn is_resolved(skills: &Map<String, Value>, key: &SkillKey) -> bool {
     false
 }
 
-/// Inserts `"TODO: Skill <id>"` placeholders into `skills` for every `key` that
+/// Inserts `"Skill <id>"` placeholders into `skills` for every `key` that
 /// does not already resolve. Returns the number of placeholders added. Add-only:
 /// never overwrites or removes. Idempotent: an already-present placeholder counts
 /// as resolved. New entries land under the child block.
@@ -199,7 +199,7 @@ mod tests {
 
         let added = insert_missing(&mut skills, &keys);
         assert_eq!(added, 1);
-        assert_eq!(skills["Pl0100"]["999"], json!("TODO: Skill 999"));
+        assert_eq!(skills["Pl0100"]["999"], json!("Skill 999"));
         assert_eq!(skills["Pl0100"]["100"], json!("Slice"), "existing untouched");
     }
 
@@ -234,6 +234,6 @@ mod tests {
             0,
             "second run adds nothing"
         );
-        assert_eq!(skills["Pl0100"]["42"], json!("TODO: Skill 42"));
+        assert_eq!(skills["Pl0100"]["42"], json!("Skill 42"));
     }
 }

@@ -3,7 +3,7 @@
 #
 # Scans src-tauri/logs.db for player skill IDs that have no name in
 # src-tauri/lang/en/ui.json and stubs each missing one with a
-# "TODO: Skill <id>" placeholder under its character block. Add-only and
+# "Skill <id>" placeholder under its character block. Add-only and
 # idempotent — existing names are never touched, so it is safe to rerun.
 #
 # Usage:
