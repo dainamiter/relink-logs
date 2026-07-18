@@ -148,6 +148,25 @@ pub struct SynthesisMatch {
     pub result_sigil_id: Option<u32>,
 }
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SynthesisStatus {
+    pub game_running: bool,
+    pub sigil_count: u32,
+    /// True when RNG state is 0 (the game will reseed from entropy — unpredictable).
+    pub rng_unpredictable: bool,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SynthesisSearchResponse {
+    pub matches: Vec<SynthesisMatch>,
+    pub pairs_tested: u64,
+    pub total_matches: u64,
+    pub sigil_count: u32,
+    pub rng_unpredictable: bool,
+}
+
 /// Test every unordered pair whose combined traits could contain the queried
 /// ones; return (matches up to `cap`, pairs actually predicted, total matches).
 pub fn search(
@@ -380,5 +399,34 @@ mod tests {
         assert_eq!(p.trait1, 0x400);
         assert_eq!(p.trait2, Some(0x300));
         assert!(p.lucky);
+    }
+
+    /// cap bounds the returned matches but `total` keeps counting.
+    #[test]
+    fn search_cap_truncates_matches_not_total() {
+        // Three sigils all carrying trait 0x100 -> pairs (1,2),(1,3),(2,3) all
+        // feed predict(); with trait2=None the query matches any pair whose
+        // result leads with 0x100. Pick a query that matches >= 2 of them.
+        let mut snap = SynthesisSnapshot {
+            rng_state: 555,
+            seed_counter: 1,
+            ..Default::default()
+        };
+        snap.sigils = vec![
+            sigil(1, 0x100, 10, EMPTY_TRAIT, 0, 1),
+            sigil(2, 0x100, 10, EMPTY_TRAIT, 0, 1),
+            sigil(3, 0x100, 10, EMPTY_TRAIT, 0, 1),
+        ];
+        // Every pair's only candidate is 0x100 -> trait1 is always 0x100.
+        let q = SynthesisQuery { trait1: 0x100, trait2: None, any_order: false, require_lucky: false };
+        let (all, tested, total) = search(&snap, &q, 100);
+        assert_eq!(tested, 3);
+        assert_eq!(total, 3);
+        assert_eq!(all.len(), 3);
+        // Now cap at 1: still 3 tested / 3 total, but only 1 returned.
+        let (capped, tested, total) = search(&snap, &q, 1);
+        assert_eq!(tested, 3);
+        assert_eq!(total, 3);
+        assert_eq!(capped.len(), 1);
     }
 }

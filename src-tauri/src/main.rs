@@ -10,7 +10,7 @@ use std::{
 };
 
 use anyhow::Context;
-use gbfr_logs::{db, parser};
+use gbfr_logs::{db, parser, synthesis};
 
 use db::logs::LogEntry;
 use dll_syringe::{process::OwnedProcess, Syringe};
@@ -46,6 +46,54 @@ fn reset_encounter(state: State<ResetChannel>) {
     if let Some(tx) = state.0.lock().unwrap().as_ref() {
         let _ = tx.send(());
     }
+}
+
+/// Toolbox / Synthesis Helper: snapshot the game's synthesis state and report
+/// whether predictions are currently possible.
+#[tauri::command(async)]
+async fn fetch_synthesis_status() -> Result<synthesis::SynthesisStatus, String> {
+    tokio::task::spawn_blocking(|| match synthesis::snapshot::take_snapshot() {
+        Ok(None) => Ok(synthesis::SynthesisStatus {
+            game_running: false,
+            sigil_count: 0,
+            rng_unpredictable: false,
+        }),
+        Ok(Some(snap)) => Ok(synthesis::SynthesisStatus {
+            game_running: true,
+            sigil_count: snap.sigils.len() as u32,
+            rng_unpredictable: snap.rng_state == 0,
+        }),
+        Err(e) => Err(e.to_string()),
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Toolbox / Synthesis Helper: fresh snapshot + exhaustive pair search.
+#[tauri::command(async)]
+async fn search_synthesis(
+    query: synthesis::SynthesisQuery,
+) -> Result<synthesis::SynthesisSearchResponse, String> {
+    if query.trait1 == synthesis::EMPTY_TRAIT
+        || query.trait2 == Some(synthesis::EMPTY_TRAIT)
+    {
+        return Err("invalid-trait".to_string());
+    }
+    tokio::task::spawn_blocking(move || {
+        let snap = synthesis::snapshot::take_snapshot()
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| "game-not-running".to_string())?;
+        let (matches, pairs_tested, total_matches) = synthesis::search(&snap, &query, 500);
+        Ok(synthesis::SynthesisSearchResponse {
+            matches,
+            pairs_tested,
+            total_matches,
+            sigil_count: snap.sigils.len() as u32,
+            rng_unpredictable: snap.rng_state == 0,
+        })
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
@@ -795,6 +843,8 @@ fn main() {
             export_damage_log_to_file,
             set_debug_mode,
             reset_encounter,
+            fetch_synthesis_status,
+            search_synthesis,
         ])
         .setup(|app| {
             // Perform the game hook check in a separate thread.
