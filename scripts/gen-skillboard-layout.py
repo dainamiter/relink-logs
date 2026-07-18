@@ -32,8 +32,12 @@ def main() -> None:
     db = sqlite3.connect(sys.argv[1])
     out: dict[str, dict[str, list[int]]] = {}
     unknown_groups: set[str] = set()
+    # Unk25=100 marks the per-category keystone/special nodes (3 categories x
+    # Chaos 1-3, ids = category*100 + tier-1). The in-game boards do NOT list
+    # them as tier traits, so they are excluded here; when the hook emits one
+    # as unlocked, the frontend's id-band fallback still places it correctly.
     for character, group, ui_id in db.execute(
-        "SELECT CharacterId, SkillboardGroupId, EffectUiId FROM skillboard_layout"
+        "SELECT CharacterId, SkillboardGroupId, EffectUiId FROM skillboard_layout WHERE Unk25 != 100"
     ):
         tier = TIER_BY_GROUP.get(group)
         if tier is None:
