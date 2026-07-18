@@ -11,8 +11,9 @@ export const NEW_ENTRY_LEVEL = 15;
  * i18next `traits` bundle.
  */
 export default function useChecklistSettings() {
-  // Requesting the namespace makes i18next load it (it is normally pulled in
-  // lazily by pages that render trait names).
+  // The `traits` namespace is already eagerly preloaded (src/i18n.ts `ns`
+  // list); this call is kept so the component re-renders via bindI18nStore
+  // when the bundle loads or the language changes.
   const { i18n } = useTranslation("traits");
   const { build, ai, setLevel, toggle, remove, add, reset } = useChecklistStore(
     useShallow((state) => ({

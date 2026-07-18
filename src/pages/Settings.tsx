@@ -37,6 +37,7 @@ const ChecklistSection = ({
   checklist: ReturnType<typeof useChecklistSettings>;
 }) => {
   const entries = group === "build" ? checklist.build : checklist.ai;
+  const [search, setSearch] = useState("");
 
   return (
     <Box>
@@ -73,7 +74,12 @@ const ChecklistSection = ({
         placeholder={addPlaceholder}
         data={checklist.traitOptions(group)}
         value={null}
-        onChange={(hex) => checklist.addTrait(group, hex)}
+        searchValue={search}
+        onSearchChange={setSearch}
+        onChange={(hex) => {
+          checklist.addTrait(group, hex);
+          setSearch("");
+        }}
       />
     </Box>
   );
