@@ -7,7 +7,7 @@
 
 pub mod snapshot;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 /// The game's "no trait in this slot" sentinel.
@@ -75,6 +75,11 @@ fn rank(s: &SynthesisSigil) -> u32 {
     l1.wrapping_add(l2)
 }
 
+/// Predict the result of synthesizing `a` + `b` under `snap`'s RNG state.
+///
+/// Precondition: at least one of the four trait slots is non-empty (every
+/// real sigil has a first trait). Two fully-blank sigils would make the
+/// candidate list empty.
 pub fn predict(snap: &SynthesisSnapshot, a: &SynthesisSigil, b: &SynthesisSigil) -> Prediction {
     let pair_key = trait_sum(a)
         + trait_sum(b)
@@ -96,7 +101,8 @@ pub fn predict(snap: &SynthesisSnapshot, a: &SynthesisSigil, b: &SynthesisSigil)
         .copied()
         .unwrap_or((0, 0));
     s = xorshift32(s); // the level roll always draws, even with no weights
-    let lucky = lo + hi > 0 && (s % (lo + hi)) >= lo;
+    let weight_total = lo.wrapping_add(hi);
+    let lucky = weight_total > 0 && (s % weight_total) >= lo;
 
     let mut cand: Vec<u32> = [a.trait1, a.trait2, b.trait1, b.trait2]
         .into_iter()
@@ -114,11 +120,85 @@ pub fn predict(snap: &SynthesisSnapshot, a: &SynthesisSigil, b: &SynthesisSigil)
         cand.swap(i, i + r as usize);
     }
 
+    debug_assert!(!cand.is_empty(), "predict() called with two traitless sigils");
+
     Prediction {
         trait1: cand[0],
         trait2: cand.get(1).copied(),
         lucky,
     }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SynthesisQuery {
+    pub trait1: u32,
+    pub trait2: Option<u32>,
+    pub any_order: bool,
+    pub require_lucky: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SynthesisMatch {
+    pub sigil_a: SynthesisSigil,
+    pub sigil_b: SynthesisSigil,
+    pub prediction: Prediction,
+    /// Item id of the result sigil (for display), when known.
+    pub result_sigil_id: Option<u32>,
+}
+
+/// Test every unordered pair whose combined traits could contain the queried
+/// ones; return (matches up to `cap`, pairs actually predicted, total matches).
+pub fn search(
+    snap: &SynthesisSnapshot,
+    q: &SynthesisQuery,
+    cap: usize,
+) -> (Vec<SynthesisMatch>, u64, u64) {
+    let has = |s: &SynthesisSigil, t: u32| s.trait1 == t || s.trait2 == t;
+    let wanted = |p: &Prediction| -> bool {
+        if q.require_lucky && !p.lucky {
+            return false;
+        }
+        match q.trait2 {
+            None => p.trait1 == q.trait1 || (q.any_order && p.trait2 == Some(q.trait1)),
+            Some(t2) => {
+                let exact = p.trait1 == q.trait1 && p.trait2 == Some(t2);
+                let swapped = p.trait1 == t2 && p.trait2 == Some(q.trait1);
+                exact || (q.any_order && swapped)
+            }
+        }
+    };
+
+    let mut matches = Vec::new();
+    let (mut tested, mut total) = (0u64, 0u64);
+    for i in 0..snap.sigils.len() {
+        for j in (i + 1)..snap.sigils.len() {
+            let (a, b) = (&snap.sigils[i], &snap.sigils[j]);
+            if !has(a, q.trait1) && !has(b, q.trait1) {
+                continue;
+            }
+            if let Some(t2) = q.trait2 {
+                if !has(a, t2) && !has(b, t2) {
+                    continue;
+                }
+            }
+            tested += 1;
+            let p = predict(snap, a, b);
+            if wanted(&p) {
+                total += 1;
+                if matches.len() < cap {
+                    matches.push(SynthesisMatch {
+                        sigil_a: a.clone(),
+                        sigil_b: b.clone(),
+                        prediction: p,
+                        result_sigil_id: snap.trait_to_item.get(&p.trait1).copied(),
+                    });
+                }
+            }
+        }
+    }
+    (matches, tested, total)
 }
 
 #[cfg(test)]
@@ -220,5 +300,85 @@ mod tests {
         // Python reference for warm=626: result [0x200, 0x300, 0x100]
         assert_eq!(shifted.trait1, 0x200);
         assert_eq!(shifted.trait2, Some(0x300));
+    }
+
+    fn search_snap() -> SynthesisSnapshot {
+        let mut snap = SynthesisSnapshot {
+            rng_state: 123_456_789,
+            seed_counter: 42,
+            ..Default::default()
+        };
+        snap.trait_to_item.insert(0x300, 0x9999);
+        snap.sigils = vec![
+            sigil(1, 0x100, 11, 0x200, 15, 5),
+            sigil(2, 0x300, 12, EMPTY_TRAIT, 0, 7),
+            sigil(3, 0x500, 10, 0x600, 10, 4),
+        ];
+        snap
+    }
+
+    /// Pair (1,2) is the reference fixture -> predicts (0x300, 0x200).
+    #[test]
+    fn search_finds_matching_pair() {
+        let snap = search_snap();
+        let q = SynthesisQuery {
+            trait1: 0x300,
+            trait2: Some(0x200),
+            any_order: false,
+            require_lucky: false,
+        };
+        let (matches, tested, total) = search(&snap, &q, 100);
+        assert_eq!(total, 1);
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].sigil_a.uid, 1);
+        assert_eq!(matches[0].sigil_b.uid, 2);
+        assert_eq!(matches[0].result_sigil_id, Some(0x9999));
+        // pairs (1,3) and (2,3) can't produce 0x300+0x200 together; only (1,2) is tested
+        assert_eq!(tested, 1);
+    }
+
+    /// Exact order excludes the swapped outcome; any_order accepts it.
+    #[test]
+    fn search_order_toggle() {
+        let snap = search_snap();
+        let exact = SynthesisQuery { trait1: 0x200, trait2: Some(0x300), any_order: false, require_lucky: false };
+        let (m, _, total) = search(&snap, &exact, 100);
+        assert_eq!(total, 0);
+        assert!(m.is_empty());
+        let any = SynthesisQuery { trait1: 0x200, trait2: Some(0x300), any_order: true, require_lucky: false };
+        let (m, _, total) = search(&snap, &any, 100);
+        assert_eq!(total, 1);
+        assert_eq!(m.len(), 1);
+    }
+
+    /// require_lucky filters out normal rolls (fixture has no weights -> never lucky).
+    #[test]
+    fn search_require_lucky() {
+        let snap = search_snap();
+        let q = SynthesisQuery { trait1: 0x300, trait2: Some(0x200), any_order: false, require_lucky: true };
+        let (m, _, total) = search(&snap, &q, 100);
+        assert_eq!(total, 0);
+        assert!(m.is_empty());
+    }
+
+    /// Reference vector for the 4-candidate shuffle with a DUPLICATED trait
+    /// (duplicates must be kept): A = {0x100 l5, 0x300 l10, rec 2},
+    /// B = {0x300 l12, 0x400 l1, rec 3}; pair_key = 2821, seed 100 -> warm 930;
+    /// rng 987654321; ranksum 28, weights {28: (2,5)}.
+    /// Python reference: lucky = true, shuffled = [0x400, 0x300, 0x300, 0x100].
+    #[test]
+    fn predict_four_candidates_with_duplicate() {
+        let a = sigil(0xA, 0x100, 5, 0x300, 10, 2);
+        let b = sigil(0xB, 0x300, 12, 0x400, 1, 3);
+        let mut snap = SynthesisSnapshot {
+            rng_state: 987_654_321,
+            seed_counter: 100,
+            ..Default::default()
+        };
+        snap.level_weights.insert(28, (2, 5));
+        let p = predict(&snap, &a, &b);
+        assert_eq!(p.trait1, 0x400);
+        assert_eq!(p.trait2, Some(0x300));
+        assert!(p.lucky);
     }
 }
