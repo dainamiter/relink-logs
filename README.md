@@ -55,7 +55,7 @@ Relink Logs uses your built-in Microsoft Edge Webview2 Runtime to run the applic
 
 However, you may have an out-of-date or missing "Webview2 Runtime":
 
-- Install the latest one from Microsoft: https://developer.microsoft.com/en-us/microsoft-edge/webview2/?form=MA13LH#download (Evergreen Bootstrapper should work here)
+- Install the latest one from Microsoft: <https://developer.microsoft.com/en-us/microsoft-edge/webview2/?form=MA13LH#download> (Evergreen Bootstrapper should work here)
 
 > Q: Is this safe? My antivirus is marking the installation as a virus / malware.
 
