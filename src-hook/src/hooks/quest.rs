@@ -368,14 +368,18 @@ impl OnQuestRetireHook {
 #[cfg(feature = "hookdiag")]
 pub mod failprobe {
     use super::*;
+    use crate::hooks::diag::read_ptr_guarded;
+    use std::sync::atomic::AtomicU32;
 
     type ResultRetryDialogFunc = unsafe extern "system" fn(*const usize);
     type MenuGameOverCtorFunc =
         unsafe extern "system" fn(*const usize, *const usize) -> *const usize;
+    type QuestSequenceTickFunc = unsafe extern "system" fn(*const usize) -> usize;
 
     static_detour! {
         static ResultRetryDialogExec: unsafe extern "system" fn(*const usize);
         static MenuGameOverCtor: unsafe extern "system" fn(*const usize, *const usize) -> *const usize;
+        static QuestSequenceTick: unsafe extern "system" fn(*const usize) -> usize;
     }
 
     // Entry sigs, both 1 sigscan match, cursor on the verified Ghidra entry.
@@ -383,6 +387,44 @@ pub mod failprobe {
         "c3 31 ff e9 ? ? ? ? ' 55 41 57 41 56 41 55 41 54 56 57 53 48 81 ec 48 01 00 00";
     const MENU_GAME_OVER_CTOR_SIG: &str =
         "48 83 c4 28 c3 cc cc cc ' 56 57 48 83 ec 28 48 89 d6 8b 05 ? ? ? ? 65 48 8b 0c 25 58 00 00 00";
+
+    // 2026-07-19 live session DISPROVED both candidates above: the MenuGameOver
+    // ctor fires ~1.1s after EVERY quest load (UI preload, not the wipe), and
+    // ResultRetryDialog::execute never fired at all — including at an observed
+    // party wipe. Kept installed for one more session only as corroboration.
+    //
+    // Current lead: the quest-flow STATE MACHINE. The flow object (mgr+0x210)
+    // holds a state id at +0x2d8 (0x35 = quest-start fade, written by
+    // QuestReadyStartQuest::execute; 0x38 gates an end-of-quest bookkeeping
+    // block in the sequence tick). No imm32 write of 0x38 exists, so the fail
+    // transition is register-written — instead of chasing writers statically,
+    // the tick hook below logs every state TRANSITION each frame. One live wipe
+    // yields the full fail-state timeline; the fail state id then becomes a
+    // production OnQuestFail emitter in this same tick (poll-on-change).
+    // FUN_14062bbc0 (rva 0x62bbc0), 1-arg per Ghidra decompile; sig is the
+    // ret-padding + prologue with the distinguishing AVX spill bytes (1 match).
+    const QUEST_SEQUENCE_TICK_SIG: &str =
+        "cc cc cc cc ' 55 41 57 41 56 41 55 41 54 56 57 53 48 81 ec a8 03 00 00 48 8d ac 24 80 00 00 00 c5 78 29 bd 10 03 00 00 c5 78 29 b5 00 03 00 00";
+
+    /// Sentinel for "no flow object" in the transition log.
+    const NO_FLOW: u32 = 0xffff_ffff;
+    static LAST_FLOW_STATE: AtomicU32 = AtomicU32::new(NO_FLOW);
+
+    fn log_flow_state_transition() {
+        let quest_state_ptr = QUEST_STATE_PTR.load(Ordering::Relaxed) as usize;
+        if quest_state_ptr == 0 {
+            return;
+        }
+        let mgr = quest_state_ptr - 0xDC8;
+        let state = match read_ptr_guarded(mgr, 0x210) {
+            Some(flow) if flow != 0 => read_u32_guarded(flow, 0x2d8),
+            _ => NO_FLOW,
+        };
+        let last = LAST_FLOW_STATE.swap(state, Ordering::Relaxed);
+        if last != state {
+            crate::hooks::diag::ev!("flow_state", "old={last:#x} new={state:#x}");
+        }
+    }
 
     pub struct FailScreenProbes;
 
@@ -407,6 +449,14 @@ pub mod failprobe {
                         MenuGameOverCtor.call(a1, a2)
                     })?;
                     MenuGameOverCtor.enable()?;
+                }
+                if let Ok(addr) = process.search_address(QUEST_SEQUENCE_TICK_SIG) {
+                    let func: QuestSequenceTickFunc = std::mem::transmute(addr);
+                    QuestSequenceTick.initialize(func, |a1| {
+                        log_flow_state_transition();
+                        QuestSequenceTick.call(a1)
+                    })?;
+                    QuestSequenceTick.enable()?;
                 }
             }
 
