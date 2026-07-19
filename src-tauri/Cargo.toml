@@ -2,7 +2,7 @@
 name = "gbfr-logs"
 version = "1.9.5"
 default-run = "gbfr-logs"
-description = "GBFR Logs"
+description = "Relink Logs"
 authors = ["you"]
 edition = "2021"
 
