@@ -14,52 +14,16 @@ On top of the original gbfr-logs feature set, this project adds:
 
 - **Game v2.0.2 / expansion support** — updated hooks and game data for the expansion (new characters, quests, and items), plus correct player attribution and stun tracking in online multiplayer.
 - **Damage cap tracking** — per-skill capped-hit counts and an exact overcap % column in the skill breakdown, read from the game's own damage-cap computation.
-- **Supplementary / Echo damage attribution** — supplementary and echo procs are attributed to the skill that triggered them, with an optional setting to merge them into their trigger skill's row, and a **Sup** meter column showing the extra damage they contribute.
 - **Expanded equipment tracking** — full loadouts for players and AI companions: weapons with uncap, awakening, wrightstones, and transcendence, innate weapon skills, sigils, overmasteries, master traits (skill board), and character stats.
 - **Build checklist** — a Builds tab that checks each player's gear against a trait checklist (e.g. Damage Cap, Supplementary Damage), editable in Settings.
-- **Conflux (Endless mode) support** — a dedicated Conflux tab that groups runs into rooms with per-room meters and buff deltas.
+- **Conflux (Endless mode) support** — a dedicated Conflux tab that groups runs into rooms with per-room meters.
 - **Toolbox: Synthesis Helper** — searches your sigil box for pairs that will synthesize into a target trait combination, using the game's actual synthesis logic.
-- **Quality of life** — failed or retired quests are saved immediately instead of being lost, plus in-app buttons for reporting bugs and translation issues.
 
 ## How to install
 
 - Go to [Releases](https://github.com/villith/relink-logs/releases)
 - Download the latest .msi installer and run it.
 - Open Relink Logs after the game is already running.
-
-## Screenshots
-
-### DPS Overlay
-
-![Meter](./docs/screenshots/meter.png)
-
-### Skill Tracking (with skill grouping)
-
-![Meter](./docs/screenshots/skill-tracking.png)
-
-### Historical Logs (with filtering)
-
-![Logs](./docs/screenshots/log-history.png)
-
-### DPS Charts
-
-![Charts](./docs/screenshots/charting.png)
-
-### SBA Tracking
-
-![SBA Tracking](./docs/screenshots/sba-tracking.png)
-
-### Equipment Tracking
-
-![Equipment Loadouts](./docs/screenshots/equipment-tracking.png)
-
-### Multi-language Support
-
-![Simplified Chinese](./docs/screenshots/simplified-chinese.png)
-
-## Settings / Customization
-
-![Settings](./docs/screenshots/settings.png)
 
 ## Found a translation problem or a bug?
 
