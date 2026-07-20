@@ -30,11 +30,16 @@ jobs:
         run: cp target/release/hook.dll src-tauri/hook.dll
 
       - name: Build App (Skip Installer)
-        # --bundles none 意思是跳过所有签名和自动更新程序，只要那个绿色的纯净 exe
+        # --bundles none 意思是跳过所有签名和自动更新程序，只要纯净 exe
         run: npx @tauri-apps/cli build --bundles none
 
-      - name: Upload EXE
+      - name: Upload EXE and DLL
         uses: actions/upload-artifact@v4
         with:
           name: GBFR-Logs-Portable
-          path: src-tauri/target/release/*.exe
+          # 把所有可能的生成目录全部抓一遍，绝不漏掉
+          path: |
+            target/release/*.exe
+            src-tauri/target/release/*.exe
+            target/release/hook.dll
+            src-tauri/hook.dll
