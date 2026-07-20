@@ -872,6 +872,23 @@ fn menu_tray_handler(handle: &AppHandle, event: SystemTrayEvent) {
             ),
             "always_on_top" => toggle_always_on_top(
                 handle.get_window("main").unwrap(),
+    // --- Portable mode: redirect ALL data to EXE-relative directories ---
+    // This MUST run before Tauri builds, otherwise WebView2 is locked to
+    // the Known Folder API path (C:\Users\...\AppData).
+    gbfr_logs::portable::ensure_dirs()
+        .expect("Failed to create portable directories");
+
+    let webview_data = gbfr_logs::portable::webview_data_dir();
+    let portable_root = gbfr_logs::portable::portable_root();
+    let logs_dir = gbfr_logs::portable::logs_dir();
+
+    // Primary: WRY checks this env var when constructing the WebView2
+    // environment. If set, it skips the Known Folder API path entirely.
+    std::env::set_var("WEBVIEW2_USER_DATA_FOLDER", &webview_data);
+
+    info!("Portable root: {}", portable_root.display());
+    info!("WebView2 data dir: {}", webview_data.display());
+
                 handle.state::<AlwaysOnTop>(),
             ),
             "reset_windows" => {
@@ -911,7 +928,7 @@ fn main() {
         .plugin(tauri_plugin_window_state::Builder::default().build())
         .plugin(
             tauri_plugin_log::Builder::default()
-                .targets([LogTarget::Folder("logs".into()), LogTarget::Stdout])
+                .targets([LogTarget::Folder(logs_dir), LogTarget::Stdout])
                 .level(LevelFilter::Warn)
                 .level_for("tao", LevelFilter::Error)
                 .build(),

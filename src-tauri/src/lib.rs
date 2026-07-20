@@ -6,4 +6,5 @@ pub mod db;
 pub mod game_mem;
 pub mod parser;
 pub mod overmastery;
+pub mod portable;
 pub mod synthesis;
