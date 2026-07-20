@@ -141,7 +141,7 @@ const Layout = () => {
                 leftSection={<ArrowsCounterClockwise size="1rem" />}
                 onClick={() => invoke("reset_meter_window")}
               >
-                {t("ui.reset-overlay")}
+                {t("ui.reset-overlay-layout")}
               </Button>
               <Button
                 variant="subtle"
