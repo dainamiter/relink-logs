@@ -5,6 +5,13 @@ import { useEffect, useRef, useState } from "react";
 import toast from "react-hot-toast";
 import { useTranslation } from "react-i18next";
 
+import { useMeterSettingsStore } from "@/stores/useMeterSettingsStore";
+import { useUpdateStatusStore } from "@/stores/useUpdateStatusStore";
+
+/** Both check paths feed the header's version indicator. */
+const recordStatus = (shouldUpdate: boolean, manifest?: UpdateManifest) =>
+  useUpdateStatusStore.getState().record({ upToDate: !shouldUpdate, latestVersion: manifest?.version ?? null });
+
 /** Loose t: real components pass react-i18next's t, tests a stub. */
 type Translator = (key: string, options?: Record<string, unknown>) => string;
 
@@ -19,9 +26,14 @@ const openUpdatePrompt = (t: Translator, manifest?: UpdateManifest) => {
         {manifest?.body}
       </Text>
     ),
-    labels: { confirm: t("ui.update-now"), cancel: t("ui.update-later") },
+    labels: { confirm: t("ui.update-now"), cancel: t("ui.update-skip") },
     onConfirm: () => {
       installUpdate().catch(() => toast.error(t("ui.update-failed")));
+    },
+    // Only the explicit Skip button suppresses this version; closing the
+    // modal any other way leaves it offered again next run.
+    onCancel: () => {
+      if (manifest?.version) useMeterSettingsStore.getState().set({ skipped_update_version: manifest.version });
     },
   });
 };
@@ -51,7 +63,9 @@ export default function useUpdateCheck(enabled: boolean) {
     let cancelled = false;
     checkUpdate()
       .then(({ shouldUpdate, manifest }) => {
+        recordStatus(shouldUpdate, manifest);
         if (cancelled || !shouldUpdate || prompted.current) return;
+        if (manifest?.version && manifest.version === useMeterSettingsStore.getState().skipped_update_version) return;
         prompted.current = true;
         openUpdatePrompt(t, manifest);
       })
@@ -74,6 +88,7 @@ export const useManualUpdateCheck = () => {
     setChecking(true);
     try {
       const { shouldUpdate, manifest } = await checkUpdate();
+      recordStatus(shouldUpdate, manifest);
       if (shouldUpdate) openUpdatePrompt(t, manifest);
       else toast.success(t("ui.up-to-date"));
     } catch {

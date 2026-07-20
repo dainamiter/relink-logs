@@ -16,6 +16,7 @@ import { checkUpdate, installUpdate } from "@tauri-apps/api/updater";
 import toast from "react-hot-toast";
 
 import { useMeterSettingsStore } from "@/stores/useMeterSettingsStore";
+import { useUpdateStatusStore } from "@/stores/useUpdateStatusStore";
 import useUpdateCheck, { previewUpdatePrompt, useManualUpdateCheck } from "./useUpdateCheck";
 
 const checkUpdateMock = vi.mocked(checkUpdate);
@@ -112,6 +113,80 @@ describe("useManualUpdateCheck", () => {
     await act(async () => result.current.checkNow());
     expect(toast.error).toHaveBeenCalledTimes(1);
     expect(openConfirmModalMock).not.toHaveBeenCalled();
+  });
+});
+
+describe("skipping an offered version", () => {
+  beforeEach(() => {
+    checkUpdateMock.mockReset();
+    openConfirmModalMock.mockReset();
+    useMeterSettingsStore.getState().set({ skipped_update_version: null });
+  });
+
+  it("the Skip button records the offered version", async () => {
+    checkUpdateMock.mockResolvedValue(update(true));
+    renderHook(() => useUpdateCheck(true));
+    await waitFor(() => expect(openConfirmModalMock).toHaveBeenCalledTimes(1));
+    const args = openConfirmModalMock.mock.calls[0][0];
+    act(() => args.onCancel?.());
+    expect(useMeterSettingsStore.getState().skipped_update_version).toBe("1.11.0");
+  });
+
+  it("the auto check stays quiet about a skipped version", async () => {
+    useMeterSettingsStore.getState().set({ skipped_update_version: "1.11.0" });
+    checkUpdateMock.mockResolvedValue(update(true));
+    renderHook(() => useUpdateCheck(true));
+    await waitFor(() => expect(checkUpdateMock).toHaveBeenCalledTimes(1));
+    expect(openConfirmModalMock).not.toHaveBeenCalled();
+  });
+
+  it("the auto check prompts again for a different version", async () => {
+    useMeterSettingsStore.getState().set({ skipped_update_version: "1.10.5" });
+    checkUpdateMock.mockResolvedValue(update(true));
+    renderHook(() => useUpdateCheck(true));
+    await waitFor(() => expect(openConfirmModalMock).toHaveBeenCalledTimes(1));
+  });
+
+  it("a manual check prompts even for a skipped version", async () => {
+    useMeterSettingsStore.getState().set({ skipped_update_version: "1.11.0" });
+    checkUpdateMock.mockResolvedValue(update(true));
+    const { result } = renderHook(() => useManualUpdateCheck());
+    await act(async () => result.current.checkNow());
+    expect(openConfirmModalMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("update status recording (header indicator)", () => {
+  beforeEach(() => {
+    checkUpdateMock.mockReset();
+    openConfirmModalMock.mockReset();
+    useUpdateStatusStore.setState({ status: null });
+  });
+
+  it("is unknown until a check has answered", () => {
+    expect(useUpdateStatusStore.getState().status).toBeNull();
+  });
+
+  it("records an available update with its version", async () => {
+    checkUpdateMock.mockResolvedValue(update(true));
+    renderHook(() => useUpdateCheck(true));
+    await waitFor(() =>
+      expect(useUpdateStatusStore.getState().status).toEqual({ upToDate: false, latestVersion: "1.11.0" })
+    );
+  });
+
+  it("records up-to-date from a manual check", async () => {
+    checkUpdateMock.mockResolvedValue(update(false));
+    const { result } = renderHook(() => useManualUpdateCheck());
+    await act(async () => result.current.checkNow());
+    expect(useUpdateStatusStore.getState().status).toEqual({ upToDate: true, latestVersion: "1.11.0" });
+  });
+
+  it("stays unknown when the check fails", async () => {
+    checkUpdateMock.mockRejectedValue(new Error("offline"));
+    renderHook(() => useUpdateCheck(true));
+    await waitFor(() => expect(checkUpdateMock).toHaveBeenCalledTimes(1));
+    expect(useUpdateStatusStore.getState().status).toBeNull();
   });
 });
 

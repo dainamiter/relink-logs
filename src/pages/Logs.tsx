@@ -14,6 +14,8 @@ import { Toaster } from "react-hot-toast";
 import { useTranslation } from "react-i18next";
 import { Link, Outlet, useLocation, useNavigate } from "react-router-dom";
 
+import { useUpdateStatusStore } from "@/stores/useUpdateStatusStore";
+
 import useUpdateCheck from "./useUpdateCheck";
 
 const GITHUB_URL = "https://github.com/villith/relink-logs";
@@ -55,6 +57,12 @@ const Layout = () => {
   const { t } = useTranslation();
   const [version, setVersion] = useState("");
   useUpdateCheck(auto_check_updates);
+  const updateStatus = useUpdateStatusStore((state) => state.status);
+  const versionSuffix = !updateStatus
+    ? ""
+    : updateStatus.upToDate
+      ? ` (${t("ui.version-latest")})`
+      : ` (${t("ui.version-update-available", { version: updateStatus.latestVersion })})`;
 
   const navigate = useNavigate();
   const { pathname } = useLocation();
@@ -93,7 +101,15 @@ const Layout = () => {
         <AppShell.Header>
           <Group h="100%" px="sm" gap="xs" wrap="nowrap">
             <Group h="100%" gap="sm" wrap="nowrap" style={{ flex: 1 }}>
-              <Text style={{ whiteSpace: "nowrap" }}>Relink Logs{version && ` - v${version}`}</Text>
+              <Text style={{ whiteSpace: "nowrap" }}>
+                Relink Logs
+                {version && ` - v${version}`}
+                {version && versionSuffix && (
+                  <Text span c="dimmed">
+                    {versionSuffix}
+                  </Text>
+                )}
+              </Text>
             </Group>
             <Group h="100%" gap="xs" wrap="nowrap" justify="center">
               <NavTab to="/logs" icon={<ListDashes size="1rem" />} active={logsActive}>
