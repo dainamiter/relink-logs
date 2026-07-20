@@ -346,4 +346,628 @@ fn fetch_logs(
         .map_err(|e| e.to_string())?;
 
     let rows = query
-        .query_map
+        .query_map([], |row| {
+            Ok((
+                row.get::<usize, Option<u32>>(0)?,    // primary_target
+                row.get::<usize, Option<u32>>(1)?,    // quest_id
+                row.get::<usize, Option<String>>(2)?, // p1_name
+                row.get::<usize, Option<String>>(3)?, // p1_type
+                row.get::<usize, Option<String>>(4)?, // p2_name
+                row.get::<usize, Option<String>>(5)?, // p2_type
+                row.get::<usize, Option<String>>(6)?, // p3_name
+                row.get::<usize, Option<String>>(7)?, // p3_type
+                row.get::<usize, Option<String>>(8)?, // p4_name
+                row.get::<usize, Option<String>>(9)?, // p4_type
+            ))
+        })
+        .map_err(|e| e.to_string())?;
+
+    for row in rows {
+        let (
+            primary_target,
+            quest_id,
+            p1_name,
+            p1_type,
+            p2_name,
+            p2_type,
+            p3_name,
+            p3_type,
+            p4_name,
+            p4_type,
+        ) = row.map_err(|e| e.to_string())?;
+
+        if let Some(primary_target) = primary_target {
+            if !enemy_ids.contains(&primary_target) {
+                enemy_ids.push(primary_target);
+            }
+        }
+
+        if let Some(quest_id) = quest_id {
+            if !quest_ids.contains(&quest_id) {
+                quest_ids.push(quest_id);
+            }
+        }
+
+        for p_name in [p1_name, p2_name, p3_name, p4_name] {
+            if let Some(p_name) = p_name {
+                if !player_ids.contains(&p_name) {
+                    player_ids.push(p_name)
+                }
+            }
+        }
+
+        for p_type in [p1_type, p2_type, p3_type, p4_type] {
+            if let Some(p_type) = p_type {
+                if !player_types.contains(&p_type) {
+                    player_types.push(p_type)
+                }
+            }
+        }
+    }
+
+    Ok(SearchResult {
+        logs,
+        page,
+        page_count,
+        log_count,
+        enemy_ids,
+        quest_ids,
+        player_ids,
+        player_types,
+    })
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ConfluxSearchResult {
+    runs: Vec<db::runs::ConfluxRun>,
+    page: u32,
+    page_count: u32,
+    run_count: i32,
+}
+
+#[tauri::command]
+fn fetch_conflux_runs(page: Option<u32>) -> Result<ConfluxSearchResult, String> {
+    let conn = db::connect_to_db().map_err(|e| e.to_string())?;
+    let page = page.unwrap_or(1);
+    let per_page = 10u32;
+    let offset = page.saturating_sub(1) * per_page;
+
+    let runs = db::runs::get_runs(&conn, per_page, offset).map_err(|e| e.to_string())?;
+    let run_count = db::runs::get_runs_count(&conn).map_err(|e| e.to_string())?;
+    let page_count = (run_count as f64 / per_page as f64).ceil() as u32;
+
+    Ok(ConfluxSearchResult {
+        runs,
+        page,
+        page_count,
+        run_count,
+    })
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct EncounterStateResponse {
+    encounter_state: v1::DerivedEncounterState,
+    players: [Option<PlayerData>; 4],
+    quest_id: Option<u32>,
+    quest_timer: Option<u32>,
+    quest_completed: bool,
+    /// 0-based room index when this log is a Conflux room, else None. Lets the
+    /// detail view suppress quest-status/elapsed-time (meaningless for a room).
+    room_index: Option<u32>,
+    targets: Vec<EnemyType>,
+    dps_chart: HashMap<u32, Vec<i32>>,
+    sba_chart: HashMap<u32, Vec<f32>>,
+    sba_events: Vec<(i64, protocol::Message)>,
+    death_events: Vec<(i64, protocol::Message)>,
+    chart_len: usize,
+    sba_chart_len: usize,
+}
+
+#[derive(Debug, Deserialize)]
+struct ParseOptions {
+    targets: Vec<EnemyType>,
+}
+
+#[tauri::command]
+fn fetch_encounter_state(id: u64, options: ParseOptions) -> Result<EncounterStateResponse, String> {
+    let conn = db::connect_to_db().map_err(|e| e.to_string())?;
+    let mut stmt = conn
+        .prepare("SELECT data, version, room_index FROM logs WHERE id = ?")
+        .map_err(|e| e.to_string())?;
+
+    let (blob, version, room_index): (Vec<u8>, u8, Option<u32>) = stmt
+        .query_row([id], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+        .map_err(|e| e.to_string())?;
+
+    // @TODO(false): If we deserialize from an older version, we should save it back into the DB as the newer format.
+    let mut parser = parser::deserialize_version(&blob, version).map_err(|e| e.to_string())?;
+
+    parser.reparse_with_options(&options.targets);
+
+    let duration = parser.derived_state.duration();
+
+    let mut player_dps: HashMap<u32, Vec<i32>> = HashMap::new();
+
+    const DPS_INTERVAL: i64 = 3 * 1_000;
+    const SBA_INTERVAL: i64 = 1_000;
+
+    for player in parser.derived_state.party.values() {
+        player_dps.insert(
+            player.index,
+            vec![0; (duration / DPS_INTERVAL) as usize + 1],
+        );
+    }
+
+    let mut targets = Vec::new();
+    let start_time = parser.start_time();
+
+    for (timestamp, event) in parser.encounter.event_log() {
+        match event {
+            Message::DamageEvent(damage_event) => {
+                // Attribute dragon-form (Id/Pl2000) damage to the Id player, matching the
+                // remap the party table uses — otherwise `derived_state.party` (keyed by the
+                // remapped index) has no bucket for the raw Pl2000 index and the chart drops it.
+                let damage_event = v1::remap_dragon_form(&parser.encounter.player_data, damage_event);
+                let damage_event = &damage_event;
+
+                let index = ((timestamp - start_time) / DPS_INTERVAL) as usize;
+                let target_type = EnemyType::from_hash(damage_event.target.parent_actor_type);
+
+                if !targets.contains(&target_type) {
+                    targets.push(target_type);
+                }
+
+                if let Some(chart) = player_dps.get_mut(&damage_event.source.parent_index) {
+                    // Check to see if the target is in the list of targets to filter by.
+                    if options.targets.is_empty() || options.targets.contains(&target_type) {
+                        chart[index] += damage_event.damage;
+                    }
+                }
+            }
+            _ => continue,
+        }
+    }
+
+    let sba_chart = parser.generate_sba_chart(SBA_INTERVAL);
+
+    let sba_events = parser
+        .encounter
+        .event_log()
+        .filter(|(_, e)| {
+            matches!(
+                e,
+                Message::OnContinueSBAChain(_)
+                    | Message::OnAttemptSBA(_)
+                    | Message::OnPerformSBA(_)
+            )
+        })
+        .map(|(ts, e)| (*ts - start_time, e.clone()))
+        .collect();
+
+    let death_events = parser
+        .encounter
+        .event_log()
+        .filter(|(_, e)| matches!(e, Message::OnDeathEvent(_)))
+        .map(|(ts, e)| (*ts - start_time, e.clone()))
+        .collect();
+
+    Ok(EncounterStateResponse {
+        encounter_state: parser.derived_state,
+        players: parser.encounter.player_data,
+        quest_id: parser.encounter.quest_id,
+        quest_timer: parser.encounter.quest_timer,
+        quest_completed: parser.encounter.quest_completed,
+        room_index,
+        dps_chart: player_dps,
+        chart_len: (duration / DPS_INTERVAL) as usize + 1,
+        sba_chart_len: (duration / SBA_INTERVAL) as usize + 1,
+        sba_chart,
+        sba_events,
+        death_events,
+        targets,
+    })
+}
+
+#[tauri::command]
+fn delete_logs(ids: Vec<u64>) -> Result<(), String> {
+    let conn = db::connect_to_db().map_err(|e| e.to_string())?;
+
+    let id_params: Vec<String> = ids.iter().map(|_| "?".to_string()).collect();
+    let param = id_params.join(",");
+
+    let sql = format!("DELETE FROM logs WHERE id IN ({})", param);
+    {
+        let mut statement = conn.prepare_cached(&sql).map_err(|e| e.to_string())?;
+        statement
+            .execute(params_from_iter(ids))
+            .map_err(|e| e.to_string())?;
+    }
+
+    // A deleted log may have been a Conflux room; reap any run left with no rooms so it
+    // doesn't linger as a ghost "×0 rooms" row (the startup sweep only reaps in-progress
+    // runs).
+    db::runs::delete_runs_without_rooms(&conn).map_err(|e| e.to_string())?;
+
+    Ok(())
+}
+
+// Continuously check for the game process and inject the DLL when found.
+async fn check_and_perform_hook(app: AppHandle) {
+    loop {
+        match OwnedProcess::find_first_by_name(gbfr_logs::game_mem::GAME_EXE) {
+            Some(target) => {
+                let syringe = Syringe::for_process(target);
+                let debug_dll_path = Path::new("hook-dbg.dll");
+                let mut dll_path = Path::new("hook.dll");
+
+                if cfg!(debug_assertions) && debug_dll_path.exists() {
+                    dll_path = debug_dll_path;
+                }
+
+                info!("Found game process, injecting DLL: {:?}", dll_path);
+
+                let _ = syringe.inject(dll_path);
+                let _ = app.emit_all("success-alert", "Found game..");
+
+                connect_and_run_parser(app);
+
+                break;
+            }
+            None => {
+                tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
+            }
+        }
+    }
+}
+
+// Connect to the game hook event channel and listen for damage events.
+fn connect_and_run_parser(app: AppHandle) {
+    let window = app.get_window("main").expect("Window not found");
+    let logs_window = app.get_window("logs").expect("Logs window not found");
+
+    let database = db::connect_to_db().expect("Could not connect to database");
+    let mut state = v1::Parser::new(app.clone(), window.clone(), database);
+
+    let (reset_tx, mut reset_rx) = tokio::sync::mpsc::unbounded_channel::<()>();
+    *app.state::<ResetChannel>().0.lock().unwrap() = Some(reset_tx);
+
+    tauri::async_runtime::spawn(async move {
+        loop {
+            match RecvPipeStream::connect_by_path(protocol::PIPE_NAME).await {
+                Ok(stream) => {
+                    info!("Connected to game!");
+
+                    let _ = app.emit_all("success-alert", "Connnected to game!");
+
+                    let decoder = tokio_util::codec::LengthDelimitedCodec::new();
+                    let mut reader = FramedRead::new(stream, decoder);
+
+                    loop {
+                        let msg = tokio::select! {
+                            next = reader.next() => match next {
+                                Some(Ok(msg)) => msg,
+                                // Pipe closed or read error: the game is gone.
+                                _ => break,
+                            },
+                            Some(()) = reset_rx.recv() => {
+                                state.on_manual_reset();
+                                continue;
+                            }
+                        };
+
+                        // Handle EOF when the game closes.
+                        if msg.is_empty() {
+                            break;
+                        }
+
+                        let debug_mode = app.state::<DebugMode>().0.load(Ordering::Relaxed);
+
+                        if let Ok(msg) = protocol::bincode::deserialize::<protocol::Message>(&msg) {
+                            if debug_mode {
+                                let _ = logs_window.emit("debug-event", &msg);
+                            }
+
+                            match msg {
+                                protocol::Message::DamageEvent(event) => {
+                                    state.on_damage_event(event);
+                                }
+                                protocol::Message::OnAreaEnter(event) => {
+                                    state.on_area_enter_event(event);
+                                }
+                                protocol::Message::PlayerLoadEvent(event) => {
+                                    state.on_player_load_event(event);
+                                }
+                                protocol::Message::PlayerIdentityEvent(event) => {
+                                    state.on_player_identity_event(event);
+                                }
+                                protocol::Message::OnQuestComplete(event) => {
+                                    state.on_quest_complete_event(event);
+                                }
+                                protocol::Message::OnQuestFail(event) => {
+                                    info!("quest retire/fail boundary: quest_id={:#x}", event.quest_id);
+                                    state.on_quest_fail_event(event);
+                                }
+                                protocol::Message::OnUpdateSBA(event) => {
+                                    state.on_sba_update(event);
+                                }
+                                protocol::Message::OnAttemptSBA(event) => {
+                                    state.on_sba_attempt(event);
+                                }
+                                protocol::Message::OnPerformSBA(event) => {
+                                    state.on_sba_perform(event);
+                                }
+                                protocol::Message::OnContinueSBAChain(event) => {
+                                    state.on_continue_sba_chain(event);
+                                }
+                                protocol::Message::OnDeathEvent(event) => {
+                                    state.on_death_event(event);
+                                }
+                                protocol::Message::ConfluxRoomEnter(event) => {
+                                    info!(
+                                        "CONFLUX ingress: ConfluxRoomEnter quest_id={:#x} manager={:#x}",
+                                        event.quest_id, event.manager_ptr
+                                    );
+                                    state.on_conflux_room_enter(event);
+                                }
+                                protocol::Message::ConfluxBuffAcquired(event) => {
+                                    info!(
+                                        "CONFLUX ingress: ConfluxBuffAcquired buff_id={:#x}",
+                                        event.buff_id
+                                    );
+                                    state.on_conflux_buff_acquired(event);
+                                }
+                                protocol::Message::ConfluxRunEnd(event) => {
+                                    info!(
+                                        "CONFLUX ingress: ConfluxRunEnd manager={:#x}",
+                                        event.manager_ptr
+                                    );
+                                    state.on_conflux_run_end(event);
+                                }
+                                protocol::Message::OnPlayerStun(event) => {
+                                    state.on_player_stun(event);
+                                }
+                            }
+                        }
+                    }
+
+                    info!("Game has closed.");
+
+                    // Last chance to persist anything still in progress (abandoned quest →
+                    // quit emits no result screen; mid-quest/mid-run quit likewise) — this
+                    // parser instance is gone once we go back to waiting for the game.
+                    state.on_game_disconnect();
+
+                    // The game has closed, so we should go back to waiting for the game to reopen.
+                    let _ = app.emit_all("error-alert", "Game has closed!");
+                    break;
+                }
+                Err(_) => {
+                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                }
+            }
+        }
+
+        // Check for the game process again.
+        tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
+        tauri::async_runtime::spawn(check_and_perform_hook(app));
+    });
+}
+
+fn system_tray_with_menu() -> SystemTray {
+    let meter = CustomMenuItem::new("open_meter", "Open Meter");
+    let logs = CustomMenuItem::new("open_logs", "Open Logs");
+    let always_on_top = CustomMenuItem::new("always_on_top", "Always on top ✓");
+    let toggle_clickthrough = CustomMenuItem::new("toggle_clickthrough", "Clickthrough");
+    let reset_windows = CustomMenuItem::new("reset_windows", "Reset Windows");
+    let quit = CustomMenuItem::new("quit", "Quit");
+
+    let menu = SystemTrayMenu::new()
+        .add_item(meter)
+        .add_item(logs)
+        .add_item(always_on_top)
+        .add_item(toggle_clickthrough)
+        .add_item(reset_windows)
+        .add_native_item(SystemTrayMenuItem::Separator)
+        .add_item(quit);
+
+    SystemTray::new().with_menu(menu)
+}
+
+fn toggle_window_visibility(handle: &AppHandle, id: &str, focus: Option<bool>) {
+    if let Some(window) = handle.get_window(id) {
+        if let Some(focus_value) = focus {
+            if focus_value {
+                window.set_focus().unwrap();
+            }
+        }
+
+        match window.is_visible().unwrap() {
+            true => window.hide().unwrap(),
+            false => window.show().unwrap(),
+        }
+    }
+}
+
+#[tauri::command]
+fn toggle_always_on_top(window: tauri::Window, state: State<AlwaysOnTop>) {
+    let always_on_top = &state.0;
+    let new_state = !always_on_top.load(Ordering::Acquire);
+    always_on_top.store(new_state, Ordering::Release);
+    window.set_always_on_top(new_state).unwrap();
+    let _ = window.emit("on-pinned", new_state);
+    let _ = window
+        .app_handle()
+        .tray_handle()
+        .get_item("always_on_top")
+        .set_title(if new_state {
+            "Always on top ✓"
+        } else {
+            "Always on top"
+        });
+}
+
+#[tauri::command]
+fn toggle_clickthrough(window: tauri::Window, state: State<ClickThrough>) {
+    let click_through = &state.0;
+    let new_state = !click_through.load(Ordering::Acquire);
+    click_through.store(new_state, Ordering::Release);
+    window.set_ignore_cursor_events(new_state).unwrap();
+    let _ = window.emit("on-clickthrough", new_state);
+    let _ = window
+        .app_handle()
+        .tray_handle()
+        .get_item("toggle_clickthrough")
+        .set_title(if new_state {
+            "Clickthrough ✓"
+        } else {
+            "Clickthrough"
+        });
+}
+
+#[tauri::command]
+fn reset_meter_window(app_handle: AppHandle) {
+    reset_window_to_default(&app_handle, "main", true);
+}
+
+/// Show `label` and restore the default geometry declared for it in
+/// tauri.conf.json. Shared by the in-app reset command and the tray's
+/// "Reset Windows" item so the two can't drift apart.
+fn reset_window_to_default(handle: &AppHandle, label: &str, center: bool) {
+    let Some(window) = handle.get_window(label) else {
+        return;
+    };
+    let _ = window.show();
+    let _ = window.unminimize();
+    match handle.config().tauri.windows.iter().find(|w| w.label == label) {
+        Some(default) => {
+            let _ = window.set_size(Size::Logical(LogicalSize {
+                width: default.width,
+                height: default.height,
+            }));
+        }
+        // Resetting is the escape hatch for a window dragged off-screen or
+        // sized to nothing, so a config that no longer declares this label
+        // should be loud rather than a silent no-op.
+        None => log::warn!("no window config for label {label:?}; size not reset"),
+    }
+    if center {
+        let _ = window.center();
+    }
+}
+
+fn menu_tray_handler(handle: &AppHandle, event: SystemTrayEvent) {
+    let should_focus = true;
+    match event {
+        SystemTrayEvent::LeftClick { .. } => {
+            toggle_window_visibility(handle, "main", Some(should_focus))
+        }
+        SystemTrayEvent::MenuItemClick { id, .. } => match id.as_str() {
+            "open_meter" => toggle_window_visibility(handle, "main", Some(should_focus)),
+            "open_logs" => toggle_window_visibility(handle, "logs", Some(should_focus)),
+            "toggle_clickthrough" => toggle_clickthrough(
+                handle.get_window("main").unwrap(),
+                handle.state::<ClickThrough>(),
+            ),
+            "always_on_top" => toggle_always_on_top(
+                handle.get_window("main").unwrap(),
+                handle.state::<AlwaysOnTop>(),
+            ),
+            "reset_windows" => {
+                reset_window_to_default(handle, "main", false);
+                reset_window_to_default(handle, "logs", false);
+            }
+            "quit" => {
+                let _ = handle.save_window_state(StateFlags::all());
+                handle.exit(0)
+            }
+            _ => {}
+        },
+        _ => {} // Ignore rest of the events.
+    }
+}
+
+fn show_window(app: &AppHandle) {
+    let windows = app.windows();
+
+    for window in windows.values() {
+        let _ = window.show();
+    }
+}
+
+fn main() {
+    // --- Portable mode: redirect ALL data to EXE-relative directories ---
+    // This MUST run before Tauri builds, otherwise WebView2 is locked to
+    // the Known Folder API path (C:\Users\...\AppData).
+    gbfr_logs::portable::ensure_dirs().expect("Failed to create portable directories");
+
+    let webview_data = gbfr_logs::portable::webview_data_dir();
+    let portable_root = gbfr_logs::portable::portable_root();
+    let logs_dir = gbfr_logs::portable::logs_dir();
+
+    // Primary: WRY checks this env var when constructing the WebView2
+    // environment. If set, it skips the Known Folder API path entirely.
+    std::env::set_var("WEBVIEW2_USER_DATA_FOLDER", &webview_data);
+    // --------------------------------------------------------------------
+
+    info!("Starting application..");
+    info!("Portable root: {}", portable_root.display());
+    info!("WebView2 data dir: {}", webview_data.display());
+
+    // Setup the database. (Will use the portable paths since ensure_dirs ran above)
+    db::setup_db().expect("Failed to setup database");
+
+    info!("Database setup complete, launching application..");
+
+    tauri::Builder::default()
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            show_window(app);
+        }))
+        .plugin(tauri_plugin_window_state::Builder::default().build())
+        .plugin(
+            tauri_plugin_log::Builder::default()
+                .targets([LogTarget::Folder(logs_dir), LogTarget::Stdout])
+                .level(LevelFilter::Warn)
+                .level_for("tao", LevelFilter::Error)
+                .build(),
+        )
+        .manage(AlwaysOnTop(AtomicBool::new(true)))
+        .manage(ClickThrough(AtomicBool::new(false)))
+        .manage(DebugMode(AtomicBool::new(false)))
+        .manage(ResetChannel(std::sync::Mutex::new(None)))
+        .system_tray(system_tray_with_menu())
+        .on_system_tray_event(menu_tray_handler)
+        .on_window_event(|event| {
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event.event() {
+                event.window().hide().unwrap();
+                api.prevent_close();
+            }
+        })
+        .invoke_handler(tauri::generate_handler![
+            fetch_encounter_state,
+            fetch_logs,
+            fetch_conflux_runs,
+            delete_logs,
+            delete_all_logs,
+            toggle_always_on_top,
+            reset_meter_window,
+            export_damage_log_to_file,
+            set_debug_mode,
+            reset_encounter,
+            fetch_synthesis_status,
+            fetch_synthesis_seed,
+            fetch_overmastery_status,
+            predict_overmastery,
+            fetch_overmastery_seed,
+            search_synthesis,
+        ])
+        .setup(|app| {
+            // Perform the game hook check in a separate thread.
+            tauri::async_runtime::spawn(check_and_perform_hook(app.handle()));
+
+            Ok(())
+        })
+        .run(tauri::generate_context!())
+        .expect("error while running tauri application");
+}
