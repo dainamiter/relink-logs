@@ -13,8 +13,8 @@ export type NewWindow = string | { from?: string; until?: string };
  * and can be pruned any time.
  */
 export const NEW_FEATURES: Record<string, NewWindow> = {
-  toolbox: { from: "1.9.6", until: "1.9.8" },
-  "overmastery-predictor": { from: "1.9.6", until: "1.9.8" },
+  toolbox: { from: "1.10.0", until: "1.10.2" },
+  "overmastery-predictor": { from: "1.10.0", until: "1.10.2" },
 };
 
 /** -1 / 0 / 1 numeric comparison of dotted version strings. */

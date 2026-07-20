@@ -1,6 +1,13 @@
 import { describe, expect, it } from "vitest";
 
-import { compareVersions, isNewVersion } from "./newFeatures";
+import { compareVersions, isNewVersion, NEW_FEATURES } from "./newFeatures";
+
+describe("NEW_FEATURES", () => {
+  it("shows the toolbox + overmastery predictor chips in the 1.10.0 release that ships them", () => {
+    expect(isNewVersion(NEW_FEATURES["toolbox"], "1.10.0")).toBe(true);
+    expect(isNewVersion(NEW_FEATURES["overmastery-predictor"], "1.10.0")).toBe(true);
+  });
+});
 
 describe("compareVersions", () => {
   it("orders version triples numerically", () => {
