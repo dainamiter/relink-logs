@@ -210,22 +210,21 @@ const SettingsPage = () => {
               onChange={(event) => setMeterSettings({ open_log_on_save: event.currentTarget.checked })}
             />
           </Tooltip>
-          <Tooltip label={t("ui.auto-check-updates-description")}>
-            <Checkbox
-              label={t("ui.auto-check-updates")}
-              checked={auto_check_updates}
-              onChange={(event) => setMeterSettings({ auto_check_updates: event.currentTarget.checked })}
-            />
-          </Tooltip>
           <Group gap="sm">
+            <Tooltip label={t("ui.auto-check-updates-description")}>
+              <Checkbox
+                label={t("ui.auto-check-updates")}
+                checked={auto_check_updates}
+                onChange={(event) => setMeterSettings({ auto_check_updates: event.currentTarget.checked })}
+              />
+            </Tooltip>
             <Button size="compact-sm" variant="light" onClick={checkNow} loading={checking}>
-              {t("ui.check-updates-now")}
+              {t("ui.check-updates")}
             </Button>
-            {debugMode && (
-              <Button size="compact-sm" variant="subtle" onClick={() => previewUpdatePrompt(t)}>
-                {t("ui.preview-update-prompt")}
-              </Button>
-            )}
+            {/* Temporary debug aid: preview the prompt as if an update existed. */}
+            <Button size="compact-sm" variant="subtle" onClick={() => previewUpdatePrompt(t)}>
+              {t("ui.preview-update-prompt")}
+            </Button>
           </Group>
           <Tooltip label={t("ui.debug-mode-description")}>
             <Checkbox label={t("ui.debug-mode")} checked={debugMode} onChange={toggleDebugMode} />

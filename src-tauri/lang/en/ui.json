@@ -49,7 +49,7 @@
     "update-now": "Update now",
     "update-later": "Later",
     "update-failed": "The update could not be installed. Try again after restarting the app.",
-    "check-updates-now": "Check for Updates Now",
+    "check-updates": "Check for Updates",
     "up-to-date": "You are on the latest version.",
     "update-check-failed": "Could not reach the update server.",
     "preview-update-prompt": "Preview Update Prompt",
