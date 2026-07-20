@@ -1,17 +1,45 @@
 import { Text } from "@mantine/core";
 import { modals } from "@mantine/modals";
-import { checkUpdate, installUpdate } from "@tauri-apps/api/updater";
-import { useEffect, useRef } from "react";
+import { checkUpdate, installUpdate, UpdateManifest } from "@tauri-apps/api/updater";
+import { useEffect, useRef, useState } from "react";
 import toast from "react-hot-toast";
 import { useTranslation } from "react-i18next";
 
+/** Loose t: real components pass react-i18next's t, tests a stub. */
+type Translator = (key: string, options?: Record<string, unknown>) => string;
+
+/** The "update available" confirm dialog: release notes as the body,
+ * install on confirm. On Windows the app exits into the installer, so
+ * nothing happens after a successful install call. */
+const openUpdatePrompt = (t: Translator, manifest?: UpdateManifest) => {
+  modals.openConfirmModal({
+    title: t("ui.update-available", { version: manifest?.version }),
+    children: (
+      <Text size="sm" style={{ whiteSpace: "pre-wrap" }}>
+        {manifest?.body}
+      </Text>
+    ),
+    labels: { confirm: t("ui.update-now"), cancel: t("ui.update-later") },
+    onConfirm: () => {
+      installUpdate().catch(() => toast.error(t("ui.update-failed")));
+    },
+  });
+};
+
+/** Shows the prompt with a made-up release — a debug aid to see the dialog
+ * without a newer release existing. Confirming runs a real installUpdate,
+ * which fails into the update-failed toast (there is nothing to install). */
+export const previewUpdatePrompt = (t: Translator) =>
+  openUpdatePrompt(t, {
+    version: "9.9.9-preview",
+    date: "",
+    body: "- Example patch note\n- Another example note",
+  });
+
 /**
  * When `enabled`, asks the update endpoint once whether a newer release
- * exists and offers it in a confirm dialog showing the release notes
- * (CHANGELOG.md section, via the updater manifest). Confirming downloads and
- * runs the installer — on Windows the app exits into it, so there is nothing
- * to do afterwards. Requires `updater.dialog: false` in tauri.conf.json;
- * failures (offline, endpoint gone) stay silent.
+ * exists and offers it via the update prompt. Requires `updater.dialog:
+ * false` in tauri.conf.json; failures (offline, endpoint gone) stay silent.
  */
 export default function useUpdateCheck(enabled: boolean) {
   const { t } = useTranslation();
@@ -25,18 +53,7 @@ export default function useUpdateCheck(enabled: boolean) {
       .then(({ shouldUpdate, manifest }) => {
         if (cancelled || !shouldUpdate || prompted.current) return;
         prompted.current = true;
-        modals.openConfirmModal({
-          title: t("ui.update-available", { version: manifest?.version }),
-          children: (
-            <Text size="sm" style={{ whiteSpace: "pre-wrap" }}>
-              {manifest?.body}
-            </Text>
-          ),
-          labels: { confirm: t("ui.update-now"), cancel: t("ui.update-later") },
-          onConfirm: () => {
-            installUpdate().catch(() => toast.error(t("ui.update-failed")));
-          },
-        });
+        openUpdatePrompt(t, manifest);
       })
       .catch(() => {
         // Offline or the endpoint is unreachable — try again next launch.
@@ -46,3 +63,25 @@ export default function useUpdateCheck(enabled: boolean) {
     };
   }, [enabled, t]);
 }
+
+/** A user-initiated check (Settings button): always answers — with the
+ * update prompt, an up-to-date toast, or an error toast. */
+export const useManualUpdateCheck = () => {
+  const { t } = useTranslation();
+  const [checking, setChecking] = useState(false);
+
+  const checkNow = async () => {
+    setChecking(true);
+    try {
+      const { shouldUpdate, manifest } = await checkUpdate();
+      if (shouldUpdate) openUpdatePrompt(t, manifest);
+      else toast.success(t("ui.up-to-date"));
+    } catch {
+      toast.error(t("ui.update-check-failed"));
+    } finally {
+      setChecking(false);
+    }
+  };
+
+  return { checking, checkNow };
+};

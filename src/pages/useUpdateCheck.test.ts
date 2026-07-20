@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@tauri-apps/api/updater", () => ({ checkUpdate: vi.fn(), installUpdate: vi.fn() }));
 vi.mock("@mantine/modals", () => ({ modals: { openConfirmModal: vi.fn() } }));
+vi.mock("react-hot-toast", () => ({ default: { success: vi.fn(), error: vi.fn() } }));
 vi.mock("react-i18next", () => ({
   useTranslation: () => ({
     t: (key: string, fallback?: unknown) => (typeof fallback === "string" ? fallback : key),
@@ -12,9 +13,10 @@ vi.mock("react-i18next", () => ({
 
 import { modals } from "@mantine/modals";
 import { checkUpdate, installUpdate } from "@tauri-apps/api/updater";
+import toast from "react-hot-toast";
 
 import { useMeterSettingsStore } from "@/stores/useMeterSettingsStore";
-import useUpdateCheck from "./useUpdateCheck";
+import useUpdateCheck, { previewUpdatePrompt, useManualUpdateCheck } from "./useUpdateCheck";
 
 const checkUpdateMock = vi.mocked(checkUpdate);
 const installUpdateMock = vi.mocked(installUpdate);
@@ -77,5 +79,48 @@ describe("useUpdateCheck", () => {
     renderHook(() => useUpdateCheck(true));
     await waitFor(() => expect(checkUpdateMock).toHaveBeenCalledTimes(1));
     expect(openConfirmModalMock).not.toHaveBeenCalled();
+  });
+});
+
+describe("useManualUpdateCheck", () => {
+  beforeEach(() => {
+    checkUpdateMock.mockReset();
+    openConfirmModalMock.mockReset();
+    vi.mocked(toast.success).mockReset();
+    vi.mocked(toast.error).mockReset();
+  });
+
+  it("prompts when the manual check finds an update", async () => {
+    checkUpdateMock.mockResolvedValue(update(true));
+    const { result } = renderHook(() => useManualUpdateCheck());
+    await act(async () => result.current.checkNow());
+    expect(openConfirmModalMock).toHaveBeenCalledTimes(1);
+    expect(toast.success).not.toHaveBeenCalled();
+  });
+
+  it("toasts up-to-date when there is no newer release", async () => {
+    checkUpdateMock.mockResolvedValue(update(false));
+    const { result } = renderHook(() => useManualUpdateCheck());
+    await act(async () => result.current.checkNow());
+    expect(openConfirmModalMock).not.toHaveBeenCalled();
+    expect(toast.success).toHaveBeenCalledTimes(1);
+  });
+
+  it("toasts an error when the endpoint is unreachable", async () => {
+    checkUpdateMock.mockRejectedValue(new Error("offline"));
+    const { result } = renderHook(() => useManualUpdateCheck());
+    await act(async () => result.current.checkNow());
+    expect(toast.error).toHaveBeenCalledTimes(1);
+    expect(openConfirmModalMock).not.toHaveBeenCalled();
+  });
+});
+
+describe("previewUpdatePrompt", () => {
+  it("opens the update modal with a sample manifest, no endpoint involved", () => {
+    openConfirmModalMock.mockReset();
+    checkUpdateMock.mockReset();
+    previewUpdatePrompt((key: string) => key);
+    expect(openConfirmModalMock).toHaveBeenCalledTimes(1);
+    expect(checkUpdateMock).not.toHaveBeenCalled();
   });
 });

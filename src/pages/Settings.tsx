@@ -11,6 +11,7 @@ import {
   Divider,
   Fieldset,
   Flex,
+  Group,
   Menu,
   NumberInput,
   Select,
@@ -26,6 +27,7 @@ import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import useChecklistSettings from "./useChecklistSettings";
 import useSettings from "./useSettings";
+import { previewUpdatePrompt, useManualUpdateCheck } from "./useUpdateCheck";
 
 export const ChecklistSection = ({
   group,
@@ -108,6 +110,7 @@ const SettingsPage = () => {
   } = useSettings();
 
   const checklist = useChecklistSettings();
+  const { checking, checkNow } = useManualUpdateCheck();
 
   const { deleteAllLogs } = useLogIndexStore((state) => ({ deleteAllLogs: state.deleteAllLogs }));
 
@@ -214,6 +217,16 @@ const SettingsPage = () => {
               onChange={(event) => setMeterSettings({ auto_check_updates: event.currentTarget.checked })}
             />
           </Tooltip>
+          <Group gap="sm">
+            <Button size="compact-sm" variant="light" onClick={checkNow} loading={checking}>
+              {t("ui.check-updates-now")}
+            </Button>
+            {debugMode && (
+              <Button size="compact-sm" variant="subtle" onClick={() => previewUpdatePrompt(t)}>
+                {t("ui.preview-update-prompt")}
+              </Button>
+            )}
+          </Group>
           <Tooltip label={t("ui.debug-mode-description")}>
             <Checkbox label={t("ui.debug-mode")} checked={debugMode} onChange={toggleDebugMode} />
           </Tooltip>
