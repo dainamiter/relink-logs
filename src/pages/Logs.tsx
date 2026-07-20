@@ -14,6 +14,8 @@ import { Toaster } from "react-hot-toast";
 import { useTranslation } from "react-i18next";
 import { Link, Outlet, useLocation, useNavigate } from "react-router-dom";
 
+import useUpdateCheck from "./useUpdateCheck";
+
 const GITHUB_URL = "https://github.com/villith/relink-logs";
 
 const NavTab = ({
@@ -46,9 +48,13 @@ const NavTab = ({
 );
 
 const Layout = () => {
-  const { open_log_on_save } = useMeterSettingsStore((state) => ({ open_log_on_save: state.open_log_on_save }));
+  const { open_log_on_save, auto_check_updates } = useMeterSettingsStore((state) => ({
+    open_log_on_save: state.open_log_on_save,
+    auto_check_updates: state.auto_check_updates,
+  }));
   const { t } = useTranslation();
   const [version, setVersion] = useState("");
+  useUpdateCheck(auto_check_updates);
 
   const navigate = useNavigate();
   const { pathname } = useLocation();

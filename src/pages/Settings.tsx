@@ -104,6 +104,7 @@ const SettingsPage = () => {
     addOverlayColumn,
     removeOverlayColumn,
     open_log_on_save,
+    auto_check_updates,
   } = useSettings();
 
   const checklist = useChecklistSettings();
@@ -204,6 +205,13 @@ const SettingsPage = () => {
               label={t("ui.open-log-on-save")}
               checked={open_log_on_save}
               onChange={(event) => setMeterSettings({ open_log_on_save: event.currentTarget.checked })}
+            />
+          </Tooltip>
+          <Tooltip label={t("ui.auto-check-updates-description")}>
+            <Checkbox
+              label={t("ui.auto-check-updates")}
+              checked={auto_check_updates}
+              onChange={(event) => setMeterSettings({ auto_check_updates: event.currentTarget.checked })}
             />
           </Tooltip>
           <Tooltip label={t("ui.debug-mode-description")}>
