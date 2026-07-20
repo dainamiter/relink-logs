@@ -1,63 +1,11 @@
-name: Release
-
-# On every push to main, if the version in package.json doesn't already have a
-# matching tag, create the tag and build + sign + publish a GitHub Release.
-# A merge that doesn't bump the version is a no-op. Requires the
-# TAURI_PRIVATE_KEY repo secret.
+name: Build Portable
 
 on:
-  push:
-    branches:
-      - main
+  workflow_dispatch:
 
 jobs:
-  tag:
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write # required to push the tag
-    outputs:
-      version: ${{ steps.check.outputs.version }}
-      should_release: ${{ steps.check.outputs.should_release }}
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0 # need tags to detect whether this version is already released
-
-      - name: Determine version and whether to release
-        id: check
-        shell: bash
-        run: |
-          version="$(node -p "require('./package.json').version")"
-          echo "version=$version" >> "$GITHUB_OUTPUT"
-          if git rev-parse "$version" >/dev/null 2>&1; then
-            echo "Tag $version already exists; nothing to release."
-            echo "should_release=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "New version $version; will tag and release."
-            echo "should_release=true" >> "$GITHUB_OUTPUT"
-          fi
-
-      # Fail before tagging: a tag without a release would block this version
-      # forever (the tag check above would skip it on every later push).
-      - name: Require CHANGELOG.md notes for this version
-        if: steps.check.outputs.should_release == 'true'
-        shell: bash
-        run: node scripts/extract-changelog.mjs "${{ steps.check.outputs.version }}"
-
-      - name: Create and push tag
-        if: steps.check.outputs.should_release == 'true'
-        shell: bash
-        run: |
-          version="${{ steps.check.outputs.version }}"
-          git tag "$version"
-          git push origin "$version"
-
-  release:
-    needs: tag
-    if: needs.tag.outputs.should_release == 'true'
+  build:
     runs-on: windows-latest
-    permissions:
-      contents: write # required to create the GitHub Release
     steps:
       - uses: actions/checkout@v4
 
@@ -71,30 +19,9 @@ jobs:
           rustup set auto-self-update disable
           rustup update nightly && rustup default nightly
 
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: "./src-tauri -> target"
-
       - name: Install npm dependencies
         run: npm ci
 
-      # The release body doubles as the updater prompt's patch notes:
-      # tauri-action copies it into latest.json as `notes`.
-      - name: Extract release notes from CHANGELOG.md
-        id: notes
-        shell: bash
-        run: |
-          {
-            echo "body<<NOTES_EOF"
-            node scripts/extract-changelog.mjs "${{ needs.tag.outputs.version }}"
-            echo ""
-            echo "Make sure to save and exit the game before updating."
-            echo "NOTES_EOF"
-          } >> "$GITHUB_OUTPUT"
-
-      # The release build bundles src-tauri/hook.dll as a Tauri resource, but
-      # nothing in `tauri build` produces it. Build the hook crate first and place
-      # the DLL where the resource glob expects it (mirrors scripts/build.ps1).
       - name: Build hook DLL
         run: cargo build --release --package hook
 
@@ -102,19 +29,12 @@ jobs:
         shell: bash
         run: cp target/release/hook.dll src-tauri/hook.dll
 
-      - name: Build, sign, and publish release
-        uses: tauri-apps/tauri-action@v0
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAURI_PRIVATE_KEY: ${{ secrets.TAURI_PRIVATE_KEY }}
-          TAURI_KEY_PASSWORD: ${{ secrets.TAURI_KEY_PASSWORD }}
+      - name: Build App (Skip Installer)
+        # --bundles none 意思是跳过所有签名和自动更新程序，只要那个绿色的纯净 exe
+        run: npx @tauri-apps/cli build --bundles none
+
+      - name: Upload EXE
+        uses: actions/upload-artifact@v4
         with:
-          tagName: ${{ needs.tag.outputs.version }}
-          releaseName: "Relink Logs ${{ needs.tag.outputs.version }}"
-          releaseBody: ${{ steps.notes.outputs.body }}
-          # Publish (not draft) so releases/latest/download/latest.json resolves —
-          # that auto-generated manifest is the updater endpoint. tauri-action
-          # uploads latest.json + the .sig by default.
-          releaseDraft: false
-          prerelease: false
-          uploadUpdaterJson: true
+          name: GBFR-Logs-Portable
+          path: src-tauri/target/release/*.exe
