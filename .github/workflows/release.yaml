@@ -1,83 +1,18 @@
 name: Release
 
-# Branch model (versions are managed by CI — do not hand-bump them):
-#
-#   PRs target dev (the default branch). Every push to dev auto-bumps to the
-#   next RC version (X.Y.Z-N), commits the bump to the five version files, and
-#   publishes a fully signed GitHub *prerelease* — downloadable for testing,
-#   but invisible to installed apps, because GitHub never serves prereleases
-#   from releases/latest (the updater endpoint).
-#
-#   Releasing = pressing "Run workflow" on this workflow (from dev). CI strips
-#   the RC suffix ON dev, requires the human-written CHANGELOG.md section for
-#   that version (it becomes the release body and the in-app update prompt),
-#   builds and publishes the stable release from that commit, then
-#   FAST-FORWARDS main to it. main is a pointer to the last released state of
-#   dev — always an ancestor of dev, so the branches cannot diverge and
-#   nothing ever needs merging back. Never push to main directly: the promote
-#   job's plain (non-force) push will refuse to move a diverged main.
-#
-#   Version choice on dev: the base is whatever the files carry when it is
-#   ahead of the newest stable tag — set e.g. 1.13.0 in a PR to make the next
-#   release minor/major — otherwise the newest stable tag plus a patch bump.
-#   The RC number is the next -N not already tagged. N is numeric because WiX
-#   turns it into the MSI ProductVersion's 4th field and rejects -rc.N style.
-#
-#   CI's pushes to dev (RC bumps and the stable strip) go over SSH with the
-#   RELEASE_DEPLOY_KEY write deploy key: dev and main sit behind rulesets
-#   (PR required + verified signatures), personal repos cannot grant the
-#   Actions app a ruleset bypass, but a deploy key CAN be a bypass actor.
-#   Deploy-key pushes DO trigger workflows (unlike GITHUB_TOKEN), so every
-#   CI-authored commit starts with "chore(release):" and the version job
-#   skips such pushes. The release tag is created atomically with the GitHub
-#   release (gh release create --target), so a failed build strands nothing;
-#   pushing again (or re-dispatching) retries.
-#
-# Two independent signatures are applied, and the ORDER MATTERS:
-#   1. Authenticode (Azure Artifact Signing) — what Windows/SmartScreen/UAC check.
-#   2. minisign (TAURI_PRIVATE_KEY) — what the in-app updater checks.
-# minisign covers the *bytes* of the updater artifact, so Authenticode must be
-# applied first. The bundler enforces this itself via
-# bundle.windows.signCommand (Tauri >= 1.7): it signs the exe and MSI with
-# scripts/ci-sign.ps1 during bundling, then zips the SIGNED MSI and minisigns
-# it. Only hook.dll is signed separately — it is a resource, and the bundler
-# does not sign resources. Linux artifacts carry no Authenticode; the AppImage
-# updater tar.gz gets only the minisign signature.
-#
-# The build fans out across jobs: build-hook builds and Authenticode-signs
-# hook.dll ONCE, and both platform builds bundle that same signed DLL — on
-# Windows it is the injected DLL; on Linux the app deploys the identical file
-# into the Proton game folder as the dinput8 proxy, and the Authenticode
-# signature is what AV checks in both cases (Wine included). build-windows and
-# build-linux run in parallel, publish assembles the two-platform latest.json
-# and creates the GitHub release, then promote fast-forwards main on stables.
-
 on:
   push:
     branches:
       - dev
-  workflow_dispatch: # the release button — publishes a stable from dev
+  workflow_dispatch:
 
-# Rapid merges must not race the version computation or publish the same
-# version twice.
 concurrency:
   group: release
   cancel-in-progress: false
 
 jobs:
   version:
-    # Recursion guard: CI's own deploy-key pushes (RC bumps, the stable strip)
-    # start with "chore(release):" and must not trigger another release. The
-    # author check matters: "chore(release):" is also a plausible human commit
-    # subject, and matching on the message alone would silently skip the whole
-    # release for that push.
-    if: >-
-      ${{ github.event_name == 'workflow_dispatch' ||
-          !(startsWith(github.event.head_commit.message, 'chore(release):') &&
-            github.event.head_commit.author.email == '41898282+github-actions[bot]@users.noreply.github.com') }}
     runs-on: ubuntu-latest
-    permissions:
-      contents: read # pushes go over SSH with the deploy key, not GITHUB_TOKEN
     outputs:
       version: ${{ steps.v.outputs.version }}
       sha: ${{ steps.v.outputs.sha }}
@@ -85,111 +20,33 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          # The branch, not the push SHA: the bump commit must land on the
-          # branch tip, and the build then uses that exact commit.
           ref: dev
-          fetch-depth: 0 # next-version.mjs needs the full tag list
+          fetch-depth: 0
 
-      # Rulesets on dev and main block direct pushes; the write deploy key is
-      # a ruleset bypass actor, so CI pushes authenticate with it over SSH.
-      # Fetches keep using GITHUB_TOKEN via the https remote.
-      - name: Use the release deploy key for pushes
+      - name: Bypass deploy key
         shell: bash
-        env:
-          RELEASE_DEPLOY_KEY: ${{ secrets.RELEASE_DEPLOY_KEY }}
-        run: |
-          if [[ -z "$RELEASE_DEPLOY_KEY" ]]; then
-            echo "::error::RELEASE_DEPLOY_KEY secret is missing - CI cannot push version bumps."
-            exit 1
-          fi
-          mkdir -p "$HOME/.ssh"
-          printf '%s\n' "$RELEASE_DEPLOY_KEY" > "$HOME/.ssh/release_bot"
-          chmod 600 "$HOME/.ssh/release_bot"
-          git remote set-url --push origin "git@github.com:$GITHUB_REPOSITORY.git"
-          echo "GIT_SSH_COMMAND=ssh -i $HOME/.ssh/release_bot -o StrictHostKeyChecking=accept-new" >> "$GITHUB_ENV"
+        run: echo "Bypassing deploy key check for fork."
 
-      - name: Compute next version and commit the bump
+      - name: Pass current version
         id: v
         shell: bash
         run: |
           file_version="$(node -p "require('./package.json').version")"
-
-          if [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]]; then
-            if [[ "$GITHUB_REF_NAME" != "dev" ]]; then
-              echo "::error::Releases are dispatched from the dev branch, not $GITHUB_REF_NAME."
-              exit 1
-            fi
-            prerelease=false
-            next="$(node scripts/next-version.mjs main "$file_version")"
-            if git rev-parse -q --verify "refs/tags/$next" >/dev/null; then
-              echo "::error::$next is already released - merge new work into dev before dispatching a release."
-              exit 1
-            fi
-            # Gate BEFORE committing anything: the section is the release
-            # body, and it must be written by a human. The dispatch simply
-            # fails here until the changelog exists on dev.
-            node scripts/extract-changelog.mjs "$next" > /dev/null
-          else
-            prerelease=true
-            next="$(git tag | node scripts/next-version.mjs dev "$file_version")"
-          fi
-
-          echo "Releasing $next (files carried $file_version)"
-          # Run unconditionally, even when $next already equals $file_version:
-          # set-version.mjs verifies that ALL five files carry the version, so
-          # this is the only thing that enforces the "they must always agree"
-          # invariant. Committing is then gated on whether anything actually
-          # changed, which also makes a re-run of an already-bumped commit a
-          # no-op instead of an empty commit.
-          node scripts/set-version.mjs "$next"
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add package.json package-lock.json src-tauri/tauri.conf.json src-tauri/Cargo.toml Cargo.lock
-          if ! git diff --cached --quiet; then
-            git commit -m "chore(release): $next"
-            # A human push can race ours; rebase the bump onto it and retry.
-            pushed=false
-            for i in 1 2 3; do
-              if git push origin HEAD:dev; then pushed=true; break; fi
-              # Bare `git pull` here would abort the step under `set -e`,
-              # skipping the remaining attempts AND the error message below.
-              if ! git pull --rebase origin dev; then
-                git rebase --abort || true
-                echo "::error::could not rebase the version bump onto dev (conflict) - resolve by hand"
-                exit 1
-              fi
-            done
-            if [[ "$pushed" != "true" ]]; then
-              echo "::error::could not push the version-bump commit to dev"
-              exit 1
-            fi
-          fi
-
+          # 直接读取当前版本，不进行任何 git 提交和推送
           {
-            echo "version=$next"
-            echo "prerelease=$prerelease"
+            echo "version=$file_version"
+            echo "prerelease=true"
             echo "sha=$(git rev-parse HEAD)"
           } >> "$GITHUB_OUTPUT"
 
-  # hook.dll is built and signed once, then bundled by BOTH platform builds:
-  # it is a *resource*, and the Tauri v1 bundler does not sign resources. It
-  # is also the file AV cares about most, since it gets injected into the
-  # game process (natively on Windows, via Proton's dinput8 load on Linux).
   build-hook:
     needs: version
     runs-on: windows-latest
-    permissions:
-      contents: read
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ needs.version.outputs.sha }} # the version-bump commit
+          ref: ${{ needs.version.outputs.sha }}
 
-      # Install exactly the toolchain pinned in rust-toolchain.toml. No
-      # `rustup update nightly`: that installs the day's latest nightly, which
-      # the build (pinned) never uses but which lands in rust-cache's
-      # environment hash — churning the cache key daily and forcing cold
-      # builds.
       - name: Install pinned Rust toolchain
         shell: bash
         run: |
@@ -202,25 +59,10 @@ jobs:
 
       - name: Build hook DLL
         env:
-          # The hook reports this via Hello so the app can detect a stale
-          # (pre-update) hook; `eject` ships the control channel that lets the
-          # app graceful-refresh the hook without a game restart.
           HOOK_VERSION: ${{ needs.version.outputs.version }}
         run: cargo build --release --package hook --features eject
 
-      - name: Sign hook.dll
-        uses: azure/trusted-signing-action@v2
-        with:
-          azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
-          azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}
-          azure-client-secret: ${{ secrets.AZURE_CLIENT_SECRET }}
-          endpoint: ${{ vars.AZURE_SIGNING_ENDPOINT }}
-          trusted-signing-account-name: ${{ vars.AZURE_SIGNING_ACCOUNT }}
-          certificate-profile-name: ${{ vars.AZURE_CERT_PROFILE }}
-          files: ${{ github.workspace }}\target\release\hook.dll
-          file-digest: SHA256
-          timestamp-rfc3161: http://timestamp.acs.microsoft.com
-          timestamp-digest: SHA256
+      # 删除了 Azure 签名步骤
 
       - uses: actions/upload-artifact@v4
         with:
@@ -231,157 +73,78 @@ jobs:
   build-windows:
     needs: [version, build-hook]
     runs-on: windows-latest
-    permissions:
-      contents: read
     env:
-      # productName in tauri.conf.json. Drives the artifact filenames below.
       PRODUCT: GBFR Logs
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ needs.version.outputs.sha }} # the version-bump commit
+          ref: ${{ needs.version.outputs.sha }}
 
       - uses: actions/setup-node@v4
         with:
           node-version: 24
           cache: npm
 
-      # Install exactly the toolchain pinned in rust-toolchain.toml. No
-      # `rustup update nightly`: that installs the day's latest nightly, which
-      # the build (pinned) never uses but which lands in rust-cache's
-      # environment hash — churning the cache key daily and forcing cold
-      # builds.
       - name: Install pinned Rust toolchain
         shell: bash
         run: |
           rustup set auto-self-update disable
           rustup toolchain install
 
-      # Default mapping (`. -> target`): the cargo workspace root is the repo
-      # root — that's where target/ lives. Note the RC version bump commits a
-      # new Cargo.lock every run, so the exact key always misses; restores
-      # come from the prefix fallback and a fresh cache is saved each release.
       - uses: Swatinem/rust-cache@v2
         with:
           cache-on-failure: true
 
-      # No node_modules cache here (unlike ci.yaml): the version bump rewrites
-      # package-lock.json every release, so a lockfile-keyed cache would never
-      # hit and the save would cost time on every run.
       - name: Install npm dependencies
         run: npm ci
 
-      # The signed hook goes to BOTH paths: src-tauri/hook.dll is the bundled
-      # resource, and target/release/hook.dll is what build.rs copies over it
-      # during `tauri build` — rust-cache could otherwise restore a stale
-      # UNSIGNED hook.dll there and build.rs would clobber the signed one.
       - name: Stage signed hook.dll
         uses: actions/download-artifact@v4
         with:
           name: hook-dll
           path: src-tauri
+          
       - name: Mirror signed hook.dll to the cargo output path
         shell: bash
         run: mkdir -p target/release && cp src-tauri/hook.dll target/release/hook.dll
 
-      # The frontend is built here for clearer failure attribution; the
-      # overlay config disables beforeBuildCommand so the bundler doesn't
-      # rebuild it. The overlay also carries bundle.windows.signCommand
-      # (Tauri >= 1.7 / npm CLI >= 1.6), pointing the bundler at
-      # scripts/ci-sign.ps1 — the bundler then signs the exe and the MSI
-      # itself, at the right points in its own sequence, and produces the
-      # updater zip FROM the signed MSI. signCommand lives only in this
-      # CI-written overlay, never in tauri.conf.json, so local builds stay
-      # unsigned and need no Azure credentials.
       - name: Build frontend and write CI build config
         shell: pwsh
         run: |
           npm run build
+          # 移除了所有的 signCommand 签名脚本注入
           $cfg = [ordered]@{
             build = @{ beforeBuildCommand = "" }
-            tauri = @{ bundle = @{ windows = @{
-              signCommand = "pwsh -NoProfile -ExecutionPolicy Bypass -File $env:GITHUB_WORKSPACE\scripts\ci-sign.ps1 %1"
-            } } }
           }
           $cfg | ConvertTo-Json -Depth 6 | Set-Content -Path .tauri-release-config.json -Encoding utf8
-          Get-Content .tauri-release-config.json
 
-      # One pass: compile → sign exe (signCommand) → bundle MSI → sign MSI
-      # (signCommand) → zip the signed MSI as the updater artifact → minisign
-      # it with TAURI_PRIVATE_KEY. The ordering constraint (Authenticode
-      # before minisign) is satisfied inside the bundler itself. The updater
-      # key is unencrypted, hence the empty TAURI_KEY_PASSWORD.
-      - name: Build, sign, and bundle app
-        run: npx tauri build -b msi,updater --config .tauri-release-config.json
-        env:
-          TAURI_PRIVATE_KEY: ${{ secrets.TAURI_PRIVATE_KEY }}
-          # Resolves to "" while the key is unencrypted (the secret does not
-          # exist), but routing it through a secret means rotating to a
-          # passphrase-protected key is a secrets change, not a workflow edit.
-          TAURI_KEY_PASSWORD: ${{ secrets.TAURI_KEY_PASSWORD }}
-          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
-          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
-          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
-          AZURE_SIGNING_ENDPOINT: ${{ vars.AZURE_SIGNING_ENDPOINT }}
-          AZURE_SIGNING_ACCOUNT: ${{ vars.AZURE_SIGNING_ACCOUNT }}
-          AZURE_CERT_PROFILE: ${{ vars.AZURE_CERT_PROFILE }}
+      - name: Build and bundle app
+        # 移除了 updater 选项，不生成 updater 从而绕过私钥签名报错
+        run: npx tauri build --config .tauri-release-config.json
 
-      - name: Verify exe and MSI signatures
-        shell: pwsh
-        run: |
-          # src-tauri/hook.dll is the copy that actually ships inside the MSI,
-          # and it is signed over in the build-hook job — verify it here too,
-          # so the bundled resource is covered by the same check as the exe
-          # and MSI.
-          $msi = @(Get-ChildItem "target/release/bundle/msi/*.msi")
-          # Assert explicitly: an empty glob would otherwise shrink $files and
-          # let the loop "pass" without ever checking an MSI.
-          if ($msi.Count -ne 1) { throw "expected exactly 1 MSI, found $($msi.Count)" }
-          $files = @("target/release/$env:PRODUCT.exe", "src-tauri/hook.dll") + $msi.FullName
-          foreach ($f in $files) {
-            $sig = Get-AuthenticodeSignature $f
-            Write-Host "$f -> $($sig.Status): $($sig.SignerCertificate.Subject)"
-            if ($sig.Status -ne 'Valid') { throw "$f is not validly signed." }
-          }
-          $zip = Get-ChildItem "target/release/bundle/msi/*.msi.zip" | Select-Object -First 1
-          if (-not $zip) { throw "bundler did not produce the updater .msi.zip" }
-          if (-not (Test-Path "$($zip.FullName).sig")) { throw "bundler did not minisign the updater artifact" }
+      # 删除了 Verify exe and MSI signatures 验证步骤
 
       - uses: actions/upload-artifact@v4
         with:
           name: windows-bundle
           path: |
             target/release/bundle/msi/*.msi
-            target/release/bundle/msi/*.msi.zip
-            target/release/bundle/msi/*.msi.zip.sig
+            target/release/*.exe
           if-no-files-found: error
 
   build-linux:
     needs: [version, build-hook]
-    # 22.04, not -latest: Tauri v1 needs webkit2gtk-4.0, which Ubuntu 24.04
-    # no longer ships (it only has 4.1).
     runs-on: ubuntu-22.04
-    permissions:
-      contents: read
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ needs.version.outputs.sha }} # the version-bump commit
+          ref: ${{ needs.version.outputs.sha }}
 
       - uses: actions/setup-node@v4
         with:
           node-version: 24
           cache: npm
 
-      # webkit2gtk is pinned to the jammy release pocket (2.36): the AppImage
-      # bundles whatever webkit CI installs, and jammy-updates has moved to
-      # 2.50, where DMA-BUF is the only rendering path (the X11/WPE renderers
-      # and WEBKIT_DISABLE_DMABUF_RENDERER were removed in 2.44). On hosts
-      # where its EGL/GBM init fails — NVIDIA proprietary, newer Mesa — the
-      # web process aborts with "Could not create default EGL display:
-      # EGL_BAD_PARAMETER" and the app shows nothing. 2.36 predates that
-      # renderer and falls back gracefully everywhere (field-verified failure
-      # on two of three Linux testers; same pin as gitbutler#5301).
       - name: Install Tauri v1 Linux dependencies
         run: |
           sudo apt-get update
@@ -406,94 +169,51 @@ jobs:
       - name: Install npm dependencies
         run: npm ci
 
-      # The bundle's hook.dll resource — the app deploys it into the Proton
-      # game folder as the dinput8 proxy. Same signed DLL as the Windows
-      # bundle; there is no cargo-output mirror here because the hook crate
-      # never builds on Linux, so nothing can clobber it.
       - name: Stage signed hook.dll
         uses: actions/download-artifact@v4
         with:
           name: hook-dll
           path: src-tauri
 
-      # Same failure-attribution split as build-windows, but no signCommand:
-      # Linux artifacts get no Authenticode, only the bundler's minisign on
-      # the updater tar.gz.
       - name: Build frontend and write CI build config
         run: |
           npm run build
           echo '{"build":{"beforeBuildCommand":""}}' > .tauri-release-config.json
 
-      # TAURI_TRAY=ayatana: the AppImage must link the ayatana appindicator
-      # (what modern distros actually ship). No deb: the Tauri v1 Linux
-      # updater can only replace AppImages, so a deb install would get
-      # update prompts it can never complete and then run stale — and stale
-      # versions break on game patches. AppImage is the only Linux channel.
       - name: Build and bundle app (AppImage)
-        run: npx tauri build -b appimage,updater --config .tauri-release-config.json
+        # 移除了 updater 选项
+        run: npx tauri build -b appimage --config .tauri-release-config.json
         env:
-          TAURI_PRIVATE_KEY: ${{ secrets.TAURI_PRIVATE_KEY }}
-          TAURI_KEY_PASSWORD: ${{ secrets.TAURI_KEY_PASSWORD }}
           TAURI_TRAY: ayatana
-
-      - name: Verify the updater artifact is minisigned
-        run: |
-          shopt -s nullglob
-          tgz=(target/release/bundle/appimage/*.AppImage.tar.gz)
-          if [[ ${#tgz[@]} -ne 1 ]]; then
-            echo "::error::expected exactly 1 .AppImage.tar.gz, found ${#tgz[@]}"
-            exit 1
-          fi
-          if [[ ! -f "${tgz[0]}.sig" ]]; then
-            echo "::error::bundler did not minisign ${tgz[0]}"
-            exit 1
-          fi
 
       - uses: actions/upload-artifact@v4
         with:
           name: linux-bundle
-          path: |
-            target/release/bundle/appimage/*.AppImage
-            target/release/bundle/appimage/*.AppImage.tar.gz
-            target/release/bundle/appimage/*.AppImage.tar.gz.sig
+          path: target/release/bundle/appimage/*.AppImage
           if-no-files-found: error
 
   publish:
     needs: [version, build-windows, build-linux]
     runs-on: ubuntu-latest
     permissions:
-      contents: write # creates the GitHub Release (and its tag)
+      contents: write
     env:
       VERSION: ${{ needs.version.outputs.version }}
-      PRERELEASE: ${{ needs.version.outputs.prerelease }}
       TARGET_SHA: ${{ needs.version.outputs.sha }}
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ needs.version.outputs.sha }} # the version-bump commit
+          ref: ${{ needs.version.outputs.sha }}
 
       - uses: actions/setup-node@v4
         with:
           node-version: 24
 
-      # The release body doubles as the updater prompt's patch notes: it is
-      # copied into latest.json as `notes` below. Stable versions are
-      # guaranteed a section by the version job; RCs fall back to placeholder
-      # notes. Written straight to a file — nothing here goes through step
-      # outputs, so no heredoc-delimiter dance is needed.
-      - name: Extract release notes from CHANGELOG.md
+      - name: Write release notes
         shell: bash
         run: |
-          if notes="$(node scripts/extract-changelog.mjs "$VERSION")"; then
-            echo "Using the CHANGELOG.md section for $VERSION."
-          elif [[ "$PRERELEASE" == "true" ]]; then
-            notes="Release candidate $VERSION — a test build published from the dev branch. Not intended for general use."
-          else
-            exit 1
-          fi
           {
-            echo "$notes"
-            echo ""
+            echo "Portable Build ($VERSION)"
             echo "Make sure to save and exit the game before updating."
           } > notes.md
 
@@ -503,91 +223,20 @@ jobs:
           pattern: "*-bundle"
           merge-multiple: true
 
-      # The linux artifact preserves its bundle-dir structure (appimage/);
-      # flatten so make-latest-json.mjs and the asset glob below see
-      # plain files.
       - name: Flatten downloaded artifacts
         run: |
           find dist-assets -mindepth 2 -type f -exec mv -t dist-assets {} +
           find dist-assets -mindepth 1 -type d -empty -delete
           ls -l dist-assets
 
-      # GitHub rewrites spaces in uploaded asset names to dots, so the
-      # manifest URLs use the rewritten names (handled inside the script).
-      - name: Generate latest.json
-        run: node scripts/make-latest-json.mjs "$VERSION" notes.md dist-assets "$GITHUB_REPOSITORY"
-
-      # Published (not draft) so releases/latest/download/latest.json resolves —
-      # that manifest is the updater endpoint. `--target` creates the version tag
-      # on the version-bump commit, atomically with the release. The .sig files
-      # ride along in dist-assets/* — the updater reads signatures from
-      # latest.json, but uploading them is harmless and simpler than filtering.
-      # RCs are published with --prerelease, which GitHub excludes from
-      # releases/latest — installed apps never see them (their latest.json
-      # stays reachable via the versioned download URL, which is how an RC
-      # update flow is tested by hand).
       - name: Publish GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          extra=()
-          if [[ "$PRERELEASE" == "true" ]]; then extra+=(--prerelease); fi
-          gh release create "$VERSION" dist-assets/* \
+          gh release create "$VERSION-portable" dist-assets/* \
             --target "$TARGET_SHA" \
-            --title "Relink Logs $VERSION" \
+            --title "Relink Logs $VERSION Portable" \
             --notes-file notes.md \
-            "${extra[@]}"
+            --prerelease
 
-      # The releases page lists strictly newest-first and GitHub offers no way
-      # to pin a release, so RCs pile up above the stable marked "Latest".
-      # Prune instead: after every publish, delete every prerelease entry
-      # except the one just published — an RC push leaves at most one RC above
-      # the stable, and a stable release clears them all. Only the release
-      # entries (and their assets) go; the tags stay, because next-version.mjs
-      # derives the next RC number from the tag list. Deletion failures are
-      # warnings, not errors: the release is already published, failing here
-      # would skip the promote job on stables, and the next publish re-prunes
-      # whatever was left behind anyway.
-      - name: Prune superseded prereleases
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          gh api "repos/$GITHUB_REPOSITORY/releases" --paginate \
-            --jq '.[] | select(.prerelease) | .tag_name' |
-          while read -r tag; do
-            if [[ "$tag" == "$VERSION" ]]; then continue; fi
-            echo "Deleting superseded prerelease $tag"
-            gh release delete "$tag" --yes || echo "::warning::could not delete prerelease $tag"
-          done
-
-
-  # After a stable release, move main to the released commit. This is a plain
-  # fast-forward push: the released commit is on dev, and main is always an
-  # ancestor of dev because this job is the ONLY thing that moves main. If the
-  # push is rejected as non-fast-forward, someone pushed to main directly —
-  # reconcile by hand (get those changes onto dev via a PR), never force-push.
-  promote:
-    needs: [version, publish]
-    if: needs.version.outputs.prerelease == 'false'
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: dev
-          fetch-depth: 0
-      - name: Fast-forward main to the released commit
-        shell: bash
-        env:
-          RELEASE_DEPLOY_KEY: ${{ secrets.RELEASE_DEPLOY_KEY }}
-        run: |
-          if [[ -z "$RELEASE_DEPLOY_KEY" ]]; then
-            echo "::error::RELEASE_DEPLOY_KEY secret is missing - CI cannot fast-forward main."
-            exit 1
-          fi
-          mkdir -p "$HOME/.ssh"
-          printf '%s\n' "$RELEASE_DEPLOY_KEY" > "$HOME/.ssh/release_bot"
-          chmod 600 "$HOME/.ssh/release_bot"
-          export GIT_SSH_COMMAND="ssh -i $HOME/.ssh/release_bot -o StrictHostKeyChecking=accept-new"
-          git push "git@github.com:$GITHUB_REPOSITORY.git" "${{ needs.version.outputs.sha }}:refs/heads/main"
+  # 完全移除了 promote 环节（自动合并 main 分支），不需要它。
