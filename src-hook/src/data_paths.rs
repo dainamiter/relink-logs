@@ -54,45 +54,53 @@ fn env_config_dir(value: Option<std::ffi::OsString>) -> Option<PathBuf> {
 }
 
 /// Directory the loaded hook module lives in.
+///
+/// Looked up by name through `GetModuleHandleW` rather than by address through
+/// `GetModuleHandleExW` + `GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS`: the two
+/// names below are the only ones the app ever injects, an injected module is in
+/// the process's module list under exactly that name, and the by-name signature
+/// is the one [`crate::process`] already compiles against. The by-address call
+/// needs a callback whose ABI has moved between windows-rs releases, for no
+/// gain here.
+///
+/// `hook-dbg.dll` is the dev DLL, `hook.dll` the release one; whichever is
+/// mapped wins. If neither is — a diagnostic harness loading this module under
+/// some other name — the host executable's directory is still a better guess
+/// than nothing.
 #[cfg(windows)]
 fn hook_dir() -> Option<PathBuf> {
-    use windows::Win32::Foundation::{HMODULE, LPARAM};
-    use windows::Win32::System::LibraryLoader::{
-        GetModuleFileNameW, GetModuleHandleExW, GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS,
-        GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-    };
+    use windows::core::PCWSTR;
+    use windows::Win32::System::LibraryLoader::{GetModuleFileNameW, GetModuleHandleW};
 
-    /// Writes the module handle into the `Option<HMODULE>` behind `lparam` —
-    /// the documented alternative to passing the address of a `MaybeUninit`.
-    unsafe extern "system" fn capture(module: HMODULE, lparam: LPARAM) -> windows::core::BOOL {
-        *(lparam.0 as *mut Option<HMODULE>) = Some(module);
-        windows::core::BOOL(1)
+    // Interpolated into the UTF-16 buffer below, so the names stay readable
+    // instead of an array of code points.
+    fn load_module(module: &str) -> Option<windows::Win32::Foundation::HMODULE> {
+        let mut name: Vec<u16> = module.encode_utf16().collect();
+        name.push(0);
+        // `GetModuleHandleW` searches only modules already mapped into this
+        // process, which is exactly the set that can hold the injected hook.
+        unsafe { GetModuleHandleW(PCWSTR(name.as_ptr())) }.ok()
     }
 
-    let mut module: Option<HMODULE> = None;
-    // From an address inside this module, so it finds the hook whatever name it
-    // was loaded under (`hook.dll`, `hook-dbg.dll`, a staging copy). The
-    // UNCHANGED_REFCOUNT flag means the handle is borrowed, not a reference to
-    // release.
-    unsafe {
-        GetModuleHandleExW(
-            GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-            windows::core::PCWSTR(hook_dir as *const () as *const u16),
-            Some(&mut module),
-        )
-        .ok()?;
-    }
-    let module = module?;
+    let module = ["hook-dbg.dll", "hook.dll"]
+        .into_iter()
+        .find_map(load_module);
 
-    let mut buffer = [0u16; 512];
-    let len = unsafe { GetModuleFileNameW(Some(module), &mut buffer) } as usize;
-    if len == 0 || len >= buffer.len() {
-        return None;
+    if let Some(module) = module {
+        let mut buffer = [0u16; 512];
+        let len = unsafe { GetModuleFileNameW(module, &mut buffer) } as usize;
+        if len > 0 && len < buffer.len() {
+            if let Some(dir) = Path::new(&String::from_utf16_lossy(&buffer[..len])).parent() {
+                return Some(dir.to_path_buf());
+            }
+        }
     }
 
-    Path::new(&String::from_utf16_lossy(&buffer[..len]))
-        .parent()
-        .map(Path::to_path_buf)
+    // No hook module mapped (the diagnostic harnesses, a `cargo test` binary):
+    // its own executable's directory is the closest thing to an answer.
+    std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(Path::to_path_buf))
 }
 
 /// Proton: the app deploys the hook into the *game* directory as `dinput8.dll`,
@@ -127,9 +135,9 @@ mod tests {
         );
     }
 
-    /// The module-path fallback resolves this test binary's directory, which is
-    /// a real absolute path — proof that the `GetModuleHandleExW` dance works
-    /// rather than silently returning `None`.
+    /// The module-path fallback resolves an absolute, existing directory — this
+    /// test binary's own — proving the `GetModuleHandleW` + `GetModuleFileNameW`
+    /// pair works rather than silently returning `None`.
     #[test]
     fn the_module_path_resolves_to_an_absolute_directory() {
         let dir = hook_dir().expect("the hook module's own directory");

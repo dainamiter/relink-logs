@@ -142,7 +142,11 @@ pub fn prepare() {
 
 /// `create_dir_all` with the path in the panic message. A failure here is
 /// unrecoverable — there is no second place the app is allowed to write.
-fn create(dir: &Path) {
+///
+/// Takes `impl AsRef<Path>` rather than `&Path` so the call sites can pass the
+/// `&PathBuf`s the accessors return without a `.clone()` or a `.to_path_buf()`.
+fn create(dir: impl AsRef<Path>) {
+    let dir = dir.as_ref();
     if let Err(e) = std::fs::create_dir_all(dir) {
         panic!(
             "portable data directory {} is not writable: {e}\n\
