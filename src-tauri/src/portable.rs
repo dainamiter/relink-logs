@@ -110,13 +110,14 @@ pub fn webview_data_dir() -> &'static Path {
 /// directories. Called first thing in `main`, before the Tauri builder and
 /// therefore before any webview exists.
 pub fn prepare() {
-    let roaming = app_root().join("AppData").join("Roaming");
-    let local = webview_data_dir();
+    // Owned on purpose. `webview_data_dir()` returns `&'static Path`, and an
+    // earlier version of this function mixed that reference with `PathBuf`
+    // locals, which the `.clone()`/`.as_path()` calls did not paper over.
+    let roaming: PathBuf = app_root().join("AppData").join("Roaming");
+    let local: PathBuf = webview_data_dir().to_path_buf();
 
     std::env::set_var("APPDATA", env_path(roaming.clone()));
-    // `webview_data_dir()` is already a `&Path`; `env_path` wants an owned
-    // `PathBuf` because it formats the value.
-    std::env::set_var("LOCALAPPDATA", env_path(local.to_path_buf()));
+    std::env::set_var("LOCALAPPDATA", env_path(local.clone()));
 
     // Tauri v1 hardcodes the WebView2 user data folder to
     // `{FOLDERID_LocalAppData}\<bundle identifier>` in
