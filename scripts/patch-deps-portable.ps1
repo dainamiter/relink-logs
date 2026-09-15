@@ -10,7 +10,7 @@
 #
 # 1. `tauri::manager::WindowManager::prepare_window` resolves
 #    `%LOCALAPPDATA%\<bundle identifier>` itself (through `dirs-next`, i.e. the
-#    registry 鈥?not `APPDATA`/`LOCALAPPDATA`, so no launcher can redirect it),
+#    registry -not `APPDATA`/`LOCALAPPDATA`, so no launcher can redirect it),
 #    assigns it to `webview_attributes.data_directory`, and then
 #    `create_dir_all`s it. That empty `%LOCALAPPDATA%\com.false` is the residue.
 # 2. wry then passes that value as the explicit `userDataFolder` argument of
@@ -21,9 +21,9 @@
 # The `dataDirectory` config option that would fix (1) is a v2 addition, and (2)
 # has no setting at all. So both crates are vendored and patched:
 #
-#   tauri  鈥?when `RELINK_LOGS_APP_DIR` is set, leave `data_directory` as None,
+#   tauri  -when `RELINK_LOGS_APP_DIR` is set, leave `data_directory` as None,
 #            so nothing is resolved, assigned or created.
-#   wry    鈥?ignore a supplied data directory when `WEBVIEW2_USER_DATA_FOLDER`
+#   wry    -ignore a supplied data directory when `WEBVIEW2_USER_DATA_FOLDER`
 #            is set, and pass none, so the loader takes it from the variable.
 #
 # With both in place the app's `portable::prepare` (which sets that variable
@@ -55,7 +55,7 @@ New-Item -ItemType Directory -Force -Path $vendorRoot | Out-Null
 
 # Line endings must not matter to the literal replacements below, and the result
 # must be a single string: `(Get-Content) -replace ...` yields an ARRAY, which
-# `[string]::Join` then stringifies as "System.Object[]" 鈥?that silently broke
+# `[string]::Join` then stringifies as "System.Object[]" -that silently broke
 # every `.Contains()` assertion here once already.
 function Get-NormalisedText([string] $text) {
     if ($null -eq $text) { return '' }
@@ -91,7 +91,7 @@ function Invoke-VendoredPatch {
         [Parameter(Mandatory)] [string] $After,
 
         # Directories the crate's own build needs. Per crate on purpose: a layout
-        # assertion that assumes one crate's shape breaks the other — `tauri`
+        # assertion that assumes one crate's shape breaks the other - `tauri`
         # ships `scripts/` for its `include_str!` templates, `wry` has only `src/`.
         [string[]] $RequiredDirs = @('src')
     )
@@ -114,7 +114,7 @@ function Invoke-VendoredPatch {
     # RENAME, do not move the entries: `Get-ChildItem $x | Move-Item -Destination
     # $y` flattens `$x`'s subdirectories into `$y`. It turned
     # `tauri-1.8.3/scripts/ipc.js` into `tauri/ipc.js`, so the crate's own
-    # `include_str!("../scripts/ipc.js")` failed to compile — eight errors of the
+    # `include_str!("../scripts/ipc.js")` failed to compile - eight errors of the
     # form "couldn't read vendor\tauri\src\../scripts/ipc.js".
     $target = Join-Path $vendorRoot $Name
     if (Test-Path $target) { Remove-Item $target -Recurse -Force }
@@ -126,14 +126,14 @@ function Invoke-VendoredPatch {
     # directory layout surviving, so prove it did before going any further.
     foreach ($required in $RequiredDirs) {
         if (-not (Test-Path (Join-Path $target $required))) {
-            throw "$Name $Version vendored without its $required/ directory — the install is flattened or incomplete"
+            throw "$Name $Version vendored without its $required/ directory - the install is flattened or incomplete"
         }
     }
     Note ("    extracted $fileCount files to vendor/$Name ({0} intact)" -f ($RequiredDirs -join ', '))
 
     $file = Join-Path $target $RelativeFile
     if (-not (Test-Path $file)) {
-        throw "$Name $Version has no $RelativeFile 鈥?layout changed, re-derive the patch"
+        throw "$Name $Version has no $RelativeFile -layout changed, re-derive the patch"
     }
 
     Note "    patching $RelativeFile"
@@ -219,7 +219,8 @@ $wryBefore = @'
 
 $wryAfter = @'
     // PATCHED (relink-logs portable build): when the app set the WebView2 data
-    // folder itself, pass none and let the loader take it from that variable 鈥?    // an explicit `userDataFolder` argument otherwise wins over it.
+    // folder itself, pass none and let the loader take it from that variable
+    // an explicit `userDataFolder` argument otherwise wins over it.
     let data_directory: Option<String> = {
       let from_env = std::env::var("__WEBVIEW_ENV__")
         .ok()

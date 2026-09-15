@@ -84,7 +84,7 @@ foreach ($key in $runtimeKeys) {
     }
 }
 if (-not $runtimeFound) {
-    Note 'NOT FOUND in the registry — a WebView2 app cannot start on this machine'
+    Note 'NOT FOUND in the registry - a WebView2 app cannot start on this machine'
 }
 
 Section "portable folder ($AppDir)"

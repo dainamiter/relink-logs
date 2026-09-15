@@ -2,7 +2,7 @@
 #
 # Two things are asserted, and both matter:
 #
-#   1. The app really is portable — every folder it should create appears next
+#   1. The app really is portable - every folder it should create appears next
 #      to the exe.
 #   2. Nothing appears in the *real* user-profile AppData folders. This is the
 #      assertion the whole change exists for, and it is checked against the
@@ -95,7 +95,7 @@ foreach ($dir in @($dataDir, $configDir, (Join-Path (Split-Path -Parent $exe) 'A
 Write-Host "launching $exe"
 # Best effort: the exe requires elevation and opens GUI windows. A headless
 # runner can refuse the launch (no interactive desktop), and that is not what
-# this script is testing — the directory assertions below still answer the
+# this script is testing - the directory assertions below still answer the
 # question, one of them either way.
 $process = $null
 try {
@@ -103,8 +103,8 @@ try {
 } catch {
     Write-Host "    could not launch: $($_.Exception.Message)"
 }
-# Long enough to reach WebView2 environment creation — the step that would
-# write into the profile if the redirect failed — without waiting on anything
+# Long enough to reach WebView2 environment creation - the step that would
+# write into the profile if the redirect failed - without waiting on anything
 # that needs the game.
 Start-Sleep -Seconds $StartupSeconds
 
@@ -128,8 +128,8 @@ foreach ($relative in $expected) {
 
 # The profile directories this app has ever created. `com.false` is the bundle
 # identifier (WebView2's profile, and tauri's `%LOCALAPPDATA%\<identifier>`);
-# `gbfr-logs` is the hook's old fern-log directory. ANY of them — populated or
-# bare — is a failure: the patched build creates none of them, so an empty one
+# `gbfr-logs` is the hook's old fern-log directory. ANY of them - populated or
+# bare - is a failure: the patched build creates none of them, so an empty one
 # means something still resolves a user-profile path.
 $junk = @()
 foreach ($profile in @($roaming, $local)) {
@@ -161,7 +161,7 @@ if ($missing.Count -gt 0) {
     Write-Host ''
     Write-Host 'FAIL: the portable directory tree is incomplete.'
     Write-Host 'AppData/Local/com.false missing means WebView2 never created its'
-    Write-Host 'profile at all — check whether the app started (see the diagnostic).'
+    Write-Host 'profile at all - check whether the app started (see the diagnostic).'
     exit 1
 }
 
