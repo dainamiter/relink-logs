@@ -126,24 +126,19 @@ foreach ($relative in $expected) {
     }
 }
 
-# The profile directories this app has ever created. An EMPTY one is tolerated:
-# Tauri v1 `create_dir_all`s `%LOCALAPPDATA%\<identifier>` before wry can be told
-# to use somewhere else, so a bare folder is expected. What must not be there is
-# a WebView2 profile inside it — `EBWebView` is the folder WebView2 creates in
-# whichever data directory it actually uses, so its presence is proof the
-# redirect failed, and its absence is proof it worked.
+# The profile directories this app has ever created. `com.false` is the bundle
+# identifier (WebView2's profile, and tauri's `%LOCALAPPDATA%\<identifier>`);
+# `gbfr-logs` is the hook's old fern-log directory. ANY of them — populated or
+# bare — is a failure: the patched build creates none of them, so an empty one
+# means something still resolves a user-profile path.
 $junk = @()
 foreach ($profile in @($roaming, $local)) {
     foreach ($name in $junkNames) {
         $path = Join-Path $profile $name
         if (-not (Test-Path -LiteralPath $path)) { continue }
         $contents = @(Get-ChildItem -LiteralPath $path -Force -ErrorAction SilentlyContinue)
-        if ($contents.Count -eq 0) {
-            Write-Host "  empty     $path (harmless)"
-            continue
-        }
-        Write-Host "  DIRTY     $path"
-        $contents | ForEach-Object { Write-Host "              $($_.Name)" }
+        Write-Host "  DIRTY     $path ($($contents.Count) entries)"
+        $contents | Select-Object -First 10 | ForEach-Object { Write-Host "              $($_.Name)" }
         $junk += $path
     }
 }
@@ -157,8 +152,8 @@ if ($junk.Count -gt 0) {
     Write-Host ''
     Write-Host 'FAIL: the launch wrote into the user profile:'
     $junk | ForEach-Object { Write-Host "  $_" }
-    Write-Host 'A WebView2 profile there means Tauri''s explicit userDataFolder won:'
-    Write-Host 'the wry patch from scripts/patch-wry-portable.ps1 did not take effect.'
+    Write-Host 'These are created by tauri/wry unless both patches in'
+    Write-Host 'scripts/patch-deps-portable.ps1 took effect.'
     exit 1
 }
 

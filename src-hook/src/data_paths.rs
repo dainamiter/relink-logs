@@ -24,10 +24,14 @@
 use std::path::{Path, PathBuf};
 
 /// The app's portable `config/` directory, or `None` if neither source
-/// resolves.
+/// resolves. Both variables name the app's root; the second is what the portable
+/// build sets for the patched dependencies, and accepting it here means the hook
+/// still finds its config if the first is ever missing.
 pub fn config_dir() -> Option<PathBuf> {
-    if let Some(dir) = env_config_dir(std::env::var_os("GBFR_LOGS_DATA_DIR")) {
-        return Some(dir);
+    for name in ["GBFR_LOGS_DATA_DIR", "RELINK_LOGS_APP_DIR"] {
+        if let Some(dir) = env_config_dir(std::env::var_os(name)) {
+            return Some(dir);
+        }
     }
     hook_dir().map(|dir| dir.join("config"))
 }

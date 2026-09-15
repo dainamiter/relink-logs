@@ -88,14 +88,13 @@ jobs:
       - name: Build frontend
         run: npm run build
 
-      # Before any cargo command: the portable build needs wry to take the
-      # WebView2 data directory from the environment instead of the
-      # `%LOCALAPPDATA%\<identifier>` Tauri v1 hardcodes and passes explicitly.
-      # `tauri.conf.json` cannot move it in v1, and the path comes from the
-      # registry, so this is the only place it can be redirected from.
-      - name: Vendor and patch wry
+      # Before any cargo command: the portable build needs tauri to stop creating
+      # `%LOCALAPPDATA%\<identifier>` (which no v1 config option can move, and
+      # which is resolved through the registry) and wry to stop passing that path
+      # as an explicit WebView2 `userDataFolder`. See the script's header.
+      - name: Vendor and patch tauri + wry
         shell: pwsh
-        run: pwsh -File ./scripts/patch-wry-portable.ps1
+        run: pwsh -File ./scripts/patch-deps-portable.ps1
 
       # Tests first, so a broken portable path fails here rather than in a
       # binary nobody can debug. The hook tree is included because the hook

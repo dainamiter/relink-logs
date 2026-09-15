@@ -119,16 +119,21 @@ pub fn prepare() {
     std::env::set_var("APPDATA", env_path(roaming.clone()));
     std::env::set_var("LOCALAPPDATA", env_path(local.clone()));
 
-    // Where WebView2 keeps its profile. An explicit `userDataFolder` wins over
-    // this, and Tauri v1 supplies one (`%LOCALAPPDATA%\<identifier>`) that no
-    // v1 config option can move — so the build vendors and patches wry to ignore
-    // that argument when this variable is set. See
-    // scripts/patch-wry-portable.ps1; without the patch this line alone was
-    // measured to have no effect.
+    // Where WebView2 keeps its profile: `AppData/Local/com.false`, the same
+    // folder Tauri would otherwise put in `%LOCALAPPDATA%`. Two things have to
+    // line up for this to be the only copy — see scripts/patch-deps-portable.ps1:
+    //   * tauri must not resolve and `create_dir_all` its own
+    //     `%LOCALAPPDATA%\<identifier>`, which it does whenever this second
+    //     variable is unset;
+    //   * wry must not pass an explicit `userDataFolder`, which wins over the
+    //     loader-level variable below.
+    // Measured without those patches: setting only the variable still produced
+    // `%LOCALAPPDATA%\com.false\EBWebView`.
     std::env::set_var(
         "WEBVIEW2_USER_DATA_FOLDER",
         env_path(webview_data_dir().join(BUNDLE_IDENTIFIER)),
     );
+    std::env::set_var("RELINK_LOGS_APP_DIR", env_path(app_root().to_path_buf()));
 
     // How the injected hook finds this tree. It runs inside the game process,
     // where `current_exe()` is the game, so it cannot derive the path itself;
