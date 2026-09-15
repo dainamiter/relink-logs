@@ -1,4 +1,4 @@
-# Vendors `tauri` and `wry`, patches both so the app owns where its files go,
+﻿# Vendors `tauri` and `wry`, patches both so the app owns where its files go,
 # and leaves a `.cargo/config.toml` pointing cargo at the patched copies.
 #
 #   pwsh -File scripts/patch-deps-portable.ps1
@@ -10,7 +10,7 @@
 #
 # 1. `tauri::manager::WindowManager::prepare_window` resolves
 #    `%LOCALAPPDATA%\<bundle identifier>` itself (through `dirs-next`, i.e. the
-#    registry — not `APPDATA`/`LOCALAPPDATA`, so no launcher can redirect it),
+#    registry 鈥?not `APPDATA`/`LOCALAPPDATA`, so no launcher can redirect it),
 #    assigns it to `webview_attributes.data_directory`, and then
 #    `create_dir_all`s it. That empty `%LOCALAPPDATA%\com.false` is the residue.
 # 2. wry then passes that value as the explicit `userDataFolder` argument of
@@ -21,9 +21,9 @@
 # The `dataDirectory` config option that would fix (1) is a v2 addition, and (2)
 # has no setting at all. So both crates are vendored and patched:
 #
-#   tauri  — when `RELINK_LOGS_APP_DIR` is set, leave `data_directory` as None,
+#   tauri  鈥?when `RELINK_LOGS_APP_DIR` is set, leave `data_directory` as None,
 #            so nothing is resolved, assigned or created.
-#   wry    — ignore a supplied data directory when `WEBVIEW2_USER_DATA_FOLDER`
+#   wry    鈥?ignore a supplied data directory when `WEBVIEW2_USER_DATA_FOLDER`
 #            is set, and pass none, so the loader takes it from the variable.
 #
 # With both in place the app's `portable::prepare` (which sets that variable
@@ -53,10 +53,29 @@ $vendorRoot = Join-Path $Root 'vendor'
 if (Test-Path $vendorRoot) { Remove-Item $vendorRoot -Recurse -Force }
 New-Item -ItemType Directory -Force -Path $vendorRoot | Out-Null
 
-# The file's CRLF/LF form must not matter to the literal replacements below.
-function Get-Normalised([string] $path) {
-    return ((Get-Content -LiteralPath $path -Raw) -replace "`r`n", "`n")
+# Line endings must not matter to the literal replacements below, and the result
+# must be a single string: `(Get-Content) -replace ...` yields an ARRAY, which
+# `[string]::Join` then stringifies as "System.Object[]" 鈥?that silently broke
+# every `.Contains()` assertion here once already.
+function Get-NormalisedText([string] $text) {
+    if ($null -eq $text) { return '' }
+    return $text.Replace("`r`n", "`n").Replace("`r", "`n")
 }
+
+function Get-Normalised([string] $path) {
+    return Get-NormalisedText ([System.IO.File]::ReadAllText($path))
+}
+
+# One sink for console and step summary: when this runs in CI, what it did has to
+# be readable without the job log.
+function Note([string] $line) {
+    Write-Host $line
+    if ($env:GITHUB_STEP_SUMMARY) {
+        Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY -Value $line -ErrorAction SilentlyContinue
+    }
+}
+
+$global:PatchReport = @()
 
 <#
 .SYNOPSIS
@@ -72,29 +91,35 @@ function Invoke-VendoredPatch {
         [Parameter(Mandatory)] [string] $After
     )
 
-    Write-Host "==> $Name $Version"
+    Note "==> $Name $Version"
     $crate = Join-Path $vendorRoot "$Name-$Version.crate"
     $url = "https://static.crates.io/crates/$Name/$Name-$Version.crate"
     Invoke-WebRequest -Uri $url -OutFile $crate -UseBasicParsing
+    $bytes = (Get-Item -LiteralPath $crate).Length
+    Note ("    downloaded {0:N0} bytes" -f $bytes)
+    if ($bytes -lt 1024) { throw "$url returned $bytes bytes; not a crate" }
 
-    Write-Host '    extracting'
+    Note '    extracting'
     # A `.crate` is a gzipped tarball; tar ships with Windows and on the runners.
     tar -xzf $crate -C $vendorRoot
+    if ($LASTEXITCODE -ne 0) { throw "tar exited $LASTEXITCODE for $crate" }
     $extracted = Join-Path $vendorRoot "$Name-$Version"
     if (-not (Test-Path $extracted)) { throw "tar did not produce $extracted" }
     $target = Join-Path $vendorRoot $Name
     Get-ChildItem -LiteralPath $extracted -Force | Move-Item -Destination $target
     Remove-Item $extracted -Recurse -Force
     Remove-Item $crate -Force
+    $fileCount = (Get-ChildItem -LiteralPath $target -Recurse -File -Force).Count
+    Note "    extracted $fileCount files to vendor/$Name"
 
     $file = Join-Path $target $RelativeFile
     if (-not (Test-Path $file)) {
-        throw "$Name $Version has no $RelativeFile — layout changed, re-derive the patch"
+        throw "$Name $Version has no $RelativeFile 鈥?layout changed, re-derive the patch"
     }
 
-    Write-Host "    patching $RelativeFile"
+    Note "    patching $RelativeFile"
     $haystack = Get-Normalised $file
-    $needle = $Before -replace "`r`n", "`n"
+    $needle = Get-NormalisedText $Before
     if (-not $haystack.Contains($needle)) {
         throw @"
 ${Name} ${Version} does not contain the expected block in ${RelativeFile}:
@@ -105,14 +130,15 @@ Re-derive the patch from the real source and update this script. Do NOT ship
 ${Name} unpatched: the portable build writes into the user profile without it.
 "@
     }
-    $patched = $haystack.Replace($needle, ($After -replace "`r`n", "`n"))
+    $patched = $haystack.Replace($needle, (Get-NormalisedText $After))
     Set-Content -LiteralPath $file -Value $patched -NoNewline -Encoding utf8
 
     # Re-read what will actually be compiled: a failed write must not pass.
     if (-not (Get-Normalised $file).Contains('PATCHED (relink-logs portable build)')) {
         throw "the $Name patch did not survive the write to $file"
     }
-    Write-Host "    patch applied"
+    Note '    patch applied and re-read'
+    $global:PatchReport += "$Name $Version patched ($fileCount files)"
     return $target
 }
 
@@ -174,8 +200,7 @@ $wryBefore = @'
 
 $wryAfter = @'
     // PATCHED (relink-logs portable build): when the app set the WebView2 data
-    // folder itself, pass none and let the loader take it from that variable —
-    // an explicit `userDataFolder` argument otherwise wins over it.
+    // folder itself, pass none and let the loader take it from that variable 鈥?    // an explicit `userDataFolder` argument otherwise wins over it.
     let data_directory: Option<String> = {
       let from_env = std::env::var("__WEBVIEW_ENV__")
         .ok()
@@ -198,19 +223,19 @@ Invoke-VendoredPatch -Name 'tauri' -Version '1.8.3' `
 Invoke-VendoredPatch -Name 'wry' -Version '0.24.12' `
     -RelativeFile 'src/webview/webview2/mod.rs' -Before $wryBefore -After $wryAfter | Out-Null
 
-Write-Host '==> pointing cargo at the patched crates'
+Note '==> pointing cargo at the patched crates'
 $cargoDir = Join-Path $Root '.cargo'
 New-Item -ItemType Directory -Force -Path $cargoDir | Out-Null
 $config = Join-Path $cargoDir 'config.toml'
 Set-Content -LiteralPath $config -Encoding utf8 -Value @'
-# Generated by scripts/patch-deps-portable.ps1 — do not edit, not committed.
+# Generated by scripts/patch-deps-portable.ps1 鈥?do not edit, not committed.
 [patch.crates-io]
 tauri = { path = "vendor/tauri" }
 wry = { path = "vendor/wry" }
 '@
-Write-Host "    $config"
+Note "    $config"
 
-Write-Host ''
-Write-Host 'Vendored and patched. The app must set:'
-Write-Host "  $AppDirEnvVar    (checked by the patched tauri)"
-Write-Host "  $WebViewDirEnvVar  (checked by the patched wry)"
+Note ''
+Note 'Vendored and patched. The app must set:'
+Note "  $AppDirEnvVar  (checked by the patched tauri)"
+Note "  $WebViewDirEnvVar  (checked by the patched wry)"
