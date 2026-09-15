@@ -24,12 +24,17 @@ sea-query = { version = "0" }
 sea-query-rusqlite = { version = "0", features = ["with-chrono"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+# No "updater" feature: this build ships as a portable folder, not an installed
+# MSI, so there is nothing for the updater to replace. tauri-build rejects the
+# feature/config mismatch outright (allowlist validation compares structure, not
+# `updater.active`), and leaving it on would also point the app's update check at
+# the upstream repository. The frontend's `checkUpdate()` degrades to the "check
+# failed" toast it already shows for an unreachable endpoint.
 tauri = { version = "1.5", features = [
   "window-set-size",
   "window-set-min-size",
   "path-all",
   "fs-read-file",
-  "updater",
   "system-tray",
   "window-show",
   "window-minimize",
