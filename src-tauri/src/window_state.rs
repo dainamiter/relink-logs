@@ -47,9 +47,11 @@ fn read_state() -> State {
 
 /// Restore the geometry saved for each window, if any.
 ///
-/// A saved position is only applied when it still overlaps one of the monitors
-/// attached right now; otherwise the window keeps the size and position its
-/// config declares, which is the only thing guaranteed to be on-screen.
+/// A saved position is only applied when it still lands on the monitor the
+/// window came up on; otherwise the window keeps the size and position its
+/// config declares, which is the only thing guaranteed to be on-screen. The
+/// check runs per window because `available_monitors` lives on `Window`, not on
+/// `AppHandle` in Tauri v1.
 pub fn restore(app: &AppHandle) {
     for (label, geometry) in read_state() {
         let Some(window) = app.get_window(&label) else {
@@ -57,7 +59,12 @@ pub fn restore(app: &AppHandle) {
         };
 
         let position = PhysicalPosition::new(geometry.x, geometry.y);
-        if position_is_on_a_monitor(app, position, &geometry) {
+        let on_screen = window
+            .current_monitor()
+            .ok()
+            .flatten()
+            .is_some_and(|monitor| overlaps(&monitor, position, &geometry));
+        if on_screen {
             let _ = window.set_position(tauri::Position::Physical(position));
         }
         let _ = window.set_size(tauri::Size::Physical(PhysicalSize::new(
@@ -70,27 +77,19 @@ pub fn restore(app: &AppHandle) {
     }
 }
 
-/// Whether `position` lands on a monitor that exists now. A window saved on a
-/// since-removed monitor reports coordinates that overlap no current monitor.
-fn position_is_on_a_monitor(
-    app: &AppHandle,
-    position: PhysicalPosition<i32>,
-    geometry: &Geometry,
-) -> bool {
-    let Ok(monitors) = app.available_monitors() else {
-        return false;
-    };
-    monitors.iter().any(|monitor| {
-        let origin = monitor.position();
-        let size = monitor.size();
-        // Overlap test rather than "origin is inside": a window saved at a
-        // negative offset on a monitor left of the primary is legal and
-        // common, but one at `origin.x - width` is entirely off it.
-        position.x + geometry.width as i32 > origin.x
-            && position.x < origin.x + size.width as i32
-            && position.y + geometry.height as i32 > origin.y
-            && position.y < origin.y + size.height as i32
-    })
+/// Whether `position` still overlaps `monitor`. A window saved on a monitor
+/// that has since been unplugged reports coordinates that overlap nothing, and
+/// restoring them would put it off-screen with no way to drag it back.
+fn overlaps(monitor: &tauri::Monitor, position: PhysicalPosition<i32>, geometry: &Geometry) -> bool {
+    let origin = monitor.position();
+    let size = monitor.size();
+    // Overlap test rather than "origin is inside": a window saved at a negative
+    // offset on a monitor left of the primary is legal and common, but one at
+    // `origin.x - width` is entirely off it.
+    position.x + geometry.width as i32 > origin.x
+        && position.x < origin.x + size.width as i32
+        && position.y + geometry.height as i32 > origin.y
+        && position.y < origin.y + size.height as i32
 }
 
 /// Snapshot the current geometry of every window and write it if it changed.

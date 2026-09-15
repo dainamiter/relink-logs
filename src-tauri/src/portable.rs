@@ -114,7 +114,9 @@ pub fn prepare() {
     let local = webview_data_dir();
 
     std::env::set_var("APPDATA", env_path(roaming.clone()));
-    std::env::set_var("LOCALAPPDATA", env_path(local.clone()));
+    // `webview_data_dir()` is already a `&Path`; `env_path` wants an owned
+    // `PathBuf` because it formats the value.
+    std::env::set_var("LOCALAPPDATA", env_path(local.to_path_buf()));
 
     // Tauri v1 hardcodes the WebView2 user data folder to
     // `{FOLDERID_LocalAppData}\<bundle identifier>` in
