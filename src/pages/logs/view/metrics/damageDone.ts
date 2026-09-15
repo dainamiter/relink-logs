@@ -1,0 +1,545 @@
+import type { ComputedPlayerState, EnemyType, FactTally, GroupFacts, MergedSkillMeasure, SkillState } from "@/types";
+import { humanizeNumber, isSupplementaryAction, ratePerSecond, share } from "@/utils";
+
+import {
+  groupSkillsForRows,
+  mergeSkillsByAction,
+  skillsForAbilityKey,
+  splitSupplementary,
+  supplementarySubValue,
+  type AbilitySkills,
+} from "../abilitySkills";
+import { enemyRowKey, playerRowKey, skillKey, skillKeyPayload } from "../rowKey";
+import type { MetricDescriptor, MetricRow, RowLevel } from "./types";
+
+const format = humanizeNumber;
+
+/** Shown where a figure was never recorded — logs saved before `minDamage` and
+ * `maxDamage` existed carry null, and the per-enemy breakdown never carried
+ * them at all. A zero would claim a hit landed for nothing. */
+const NOT_RECORDED = "—";
+
+/** The smallest or largest single hit across an ability's skills, formatted.
+ *
+ * Extremes are taken across contributors rather than from one of them: a player
+ * and their summon are separate breakdown rows under one ability. */
+const extreme = (values: (number | null)[], pick: (values: number[]) => number): string => {
+  const known = values.filter((value): value is number => value !== null);
+  return known.length === 0 ? NOT_RECORDED : format(pick(known));
+};
+
+/** The numeric columns every damage row below the players level fills, in
+ * header order. Written once because the three shapes of drill-down row have to
+ * line up under ONE header — see `columnKeys`. Exported for the analysis
+ * machine's group fold, which fills the same header. */
+export const damageColumns = (damage: number, hits: number, min: string, max: string, total: number): string[] => [
+  format(damage),
+  String(hits),
+  min,
+  max,
+  format(hits === 0 ? 0 : Math.round(damage / hits)),
+  share(damage, total),
+];
+
+/** How many of a `FactTally`'s hits COUNTED toward its rate — `unknown` sits
+ * outside every denominator below (see the Rust `FactTally` doc). */
+const countedHits = (tally: FactTally): number =>
+  tally.measuredYes + tally.measuredNo + tally.inferredYes + tally.inferredNo;
+
+/** One fact's rate over its counted hits, e.g. "63%" — or a dash where
+ * nothing was counted (every hit landed `unknown`, or logged before facts
+ * existed at all).
+ *
+ * Rounded to a whole percent, deliberately: the underlying quantity is a hit
+ * COUNT (yes-hits over counted-hits), not a continuous measurement, so a
+ * decimal place would suggest a precision the tally does not carry — and
+ * these cells sit in `w-cell`-width columns, where every extra character
+ * competes with the `~` provenance marker for room. Do not "fix" this to
+ * match `share`'s one decimal place. */
+export const factRate = (tally: FactTally): string => {
+  const counted = countedHits(tally);
+  if (counted === 0) return NOT_RECORDED;
+  return `${Math.round(((tally.measuredYes + tally.inferredYes) / counted) * 100)}%`;
+};
+
+/** The share of a fact's counted hits that came from inference rather than a
+ * direct measurement, as a fraction — 0 where nothing was counted (so a
+ * caller need not special-case that alongside `factRate`'s dash). */
+export const inferredShare = (tally: FactTally): number => {
+  const counted = countedHits(tally);
+  return counted === 0 ? 0 : (tally.inferredYes + tally.inferredNo) / counted;
+};
+
+/** One fact's table cell: the rate, with a trailing `~` where the rate leans
+ * on inference (`inferredShare > 0`) — the provenance marker the hover card's
+ * "Damage facts" section explains. Absent tally (a row with nothing to tally,
+ * or the descriptors' SkillState-based fold, which carries no facts at all)
+ * reads the same dash as an all-`unknown` one. */
+export const factCell = (tally?: FactTally): string => {
+  if (tally === undefined) return NOT_RECORDED;
+  const rate = factRate(tally);
+  return rate === NOT_RECORDED || inferredShare(tally) === 0 ? rate : `${rate}~`;
+};
+
+/** The headers the WP%/BA% cells sit under. Declared beside the cells that fill
+ * them because the two must agree exactly: a header list and a cell list that
+ * disagree render the trailing columns under the wrong names, or under none. */
+export const FACT_COLUMN_KEYS = ["ui.skill-columns.weak-point", "ui.skill-columns.back-attack"];
+
+/** The WP%/BA% cells appended after every damage row's own columns — see
+ * `columnKeys`. `~` is an intentional glyph, not prose: `factCell` is the
+ * one place it is written, so no JSX ever spells it out literally.
+ *
+ * Empty unless `show`, which is the `show_damage_facts` setting: the columns
+ * are off by default (see the store), and `columnKeys` withholds
+ * `FACT_COLUMN_KEYS` on the same flag so the header row and the cells can only
+ * appear together.
+ *
+ * Crit% is tallied like the other two but has no column in either state — it is
+ * read in the row's hover card (`FACT_ROWS`), because the damage row already
+ * spends six columns before these and a crit rate is wanted when a row is being
+ * explained rather than when the table is being scanned. */
+export const factColumns = (facts?: GroupFacts, show: boolean = false): string[] =>
+  show ? [factCell(facts?.weakPoint), factCell(facts?.backAttack)] : [];
+
+/** What the hover card's "Damage facts" section captions a fact row with, or
+ * null where the rate alone says enough (fully measured). Kept beside
+ * `factCell` rather than inline in the card component so the two can never
+ * disagree about when a rate needs explaining. */
+export type FactCaption =
+  | { key: "ui.logs.hover-fact-no-data" }
+  | { key: "ui.logs.hover-fact-inferred"; params: { pct: number } };
+
+export const factCaption = (tally: FactTally): FactCaption | null => {
+  if (countedHits(tally) === 0) return { key: "ui.logs.hover-fact-no-data" };
+  const inferred = inferredShare(tally);
+  return inferred > 0 ? { key: "ui.logs.hover-fact-inferred", params: { pct: Math.round(inferred * 100) } } : null;
+};
+
+/** The landing views behind a set of breakdown rows, skipping any row that
+ * carries none — a backend older than the field sends nothing, and a missing
+ * measure is "nothing to merge" rather than a row of zeros. */
+const measuresOf = (skills: SkillState[]): MergedSkillMeasure[] =>
+  skills.map((skill) => skill.merged).filter((measure): measure is MergedSkillMeasure => measure !== undefined);
+
+/** Everything a damage BAR reads off one set of breakdown rows: its length,
+ * its supplementary split, and the numeric columns beside it.
+ *
+ * The ability rows and their per-player children are the same bar drawn at two
+ * grains — same sum, same split rule, same columns — and only the key, label
+ * and pin differ. Written once so the echo split (which decides whether a bar
+ * mounts one segment or two) cannot be changed for the parent and missed for
+ * the children, which is the exact way a row and its expansion come to disagree
+ * about their own total.
+ *
+ * `subValue` is ABSENT rather than 0 where there is no split, so a row with no
+ * echoes mounts a single segment.
+ *
+ * `merged` picks which view the cells report — LANDINGS (an echo counted as
+ * part of the hit that caused it) or raw events — the same choice
+ * `groupRows.ts` makes one level up, so a nested child and the merged parent it
+ * expands can never disagree about their own total. */
+const damageCells = (
+  skills: SkillState[],
+  total: number,
+  merged: boolean
+): { value: number; subValue?: number; columns: string[] } => {
+  // Absent merged data must NOT read as zero: the field is optional for backend
+  // skew, and a row silently reporting 0 is worse than one reporting unmerged
+  // figures. Only where something behind the row carries a landing view is
+  // there a landing view to report.
+  //
+  const landings = measuresOf(skills);
+
+  // Only a MIXED set has a split to report — `splitSupplementary` owns both
+  // that rule and the direct/echo partition, so every bar in the view splits
+  // the same way. Read here rather than in the raw branch alone because the
+  // landing gate below turns on the same question.
+  const { echoes, mixed } = splitSupplementary(skills);
+
+  // A MIXED bucket under the collapse is a cause row holding the echoes it
+  // claimed, so those echo rows are FOLDED ones: their landing view is the
+  // residue the pairing could not attach (`MergedSkillMeasure`), and the
+  // backend counts each of those as a landing — right where the residue stands
+  // as the echo row (all-echo, not mixed), wrong here. Its damage belongs to
+  // this row, but the trigger it rode is already one of the hits counted here;
+  // the pairing just could not say which. Counting it read Eustace's 360 normal
+  // attacks as 361 with the merge on (log 2586), and let a fragment of a
+  // landing stand as the row's minimum.
+  const landed =
+    merged && mixed ? measuresOf(skills.filter((skill) => !isSupplementaryAction(skill.actionType))) : landings;
+  const hits = landed.reduce((sum, measure) => sum + measure.hits, 0);
+
+  // Present AND meaningful. The landing pass walks damage events only, so a row
+  // opened by something else (`PerfectGuard`, `StunEffect(0)`) carries an
+  // all-zero measure beside real hits — reporting it verbatim says the thing
+  // never happened. Zero landings only DESCRIBE a row when an echo could have
+  // folded them away: a fully claimed echo is legitimately empty here, and
+  // sending it to the raw branch instead would draw its damage a second time
+  // under the trigger already reporting it. Every direct damage event is a
+  // landing of its own, so no bucket with damage in it reaches the fallback.
+  if (merged && landings.length > 0 && (hits > 0 || echoes.length > 0)) {
+    const damage = landings.reduce((sum, measure) => sum + measure.damage, 0);
+    const supplementary = landings.reduce((sum, measure) => sum + measure.supplementary, 0);
+    return {
+      value: damage,
+      // The split is the backend's own figure and CANNOT be inferred the way
+      // the raw view does. Once every echo folds onto its trigger, the echo row
+      // contributes `merged.damage === 0`, so looking for an echo among these
+      // skills finds nothing and a row with a real echo share would draw one
+      // flat bar.
+      ...supplementarySubValue(supplementary, damage),
+      // Three trailing dashes: SkillState carries no fact tallies at all — only
+      // the groups-path `GroupMeasure.facts` does — so every row this
+      // (dead-at-runtime, still directly tested) fold produces is honestly
+      // "no data" against the header `columnKeys` now promises.
+      columns: [
+        ...damageColumns(
+          damage,
+          hits,
+          // Verbatim from the backend, never re-derived: under the landing model
+          // an extreme IS a whole landing, echo included, and only the parser
+          // still holds the per-hit identity that would take to compute. Over the
+          // same set the hits come from — a residue is a fragment of a landing,
+          // not one of its own, and the two columns describe one population.
+          extreme(
+            landed.map((measure) => measure.min),
+            (values) => Math.min(...values)
+          ),
+          extreme(
+            landed.map((measure) => measure.max),
+            (values) => Math.max(...values)
+          ),
+          total
+        ),
+        ...factColumns(),
+      ],
+    };
+  }
+
+  const rawDamage = skills.reduce((sum, skill) => sum + skill.totalDamage, 0);
+  const rawHits = skills.reduce((sum, skill) => sum + skill.hits, 0);
+  const supplementary = mixed ? echoes.reduce((sum, skill) => sum + skill.totalDamage, 0) : 0;
+  return {
+    value: rawDamage,
+    ...(supplementary > 0 ? { subValue: supplementary } : {}),
+    // See the merged branch above: SkillState has no facts to report.
+    columns: [
+      ...damageColumns(
+        rawDamage,
+        rawHits,
+        // Across every skill behind the row. On the collapse-OFF path that is
+        // the same set the old direct half was: an echo keys to the echo row, so
+        // no bucket is mixed.
+        //
+        // This branch also serves the absent-`merged` FALLBACK, where the
+        // collapse is on and the bucket is mixed, so these extremes do span both
+        // halves — a row there can report an echo tick as its minimum (200 → 90
+        // on the fixture below). Accepted: the fallback is a degraded skew path,
+        // and the narrowing that would prevent it is the very rule the landing
+        // model replaces. Pinned by "falls back to the raw figures…".
+        extreme(
+          skills.map((skill) => skill.minDamage),
+          (values) => Math.min(...values)
+        ),
+        extreme(
+          skills.map((skill) => skill.maxDamage),
+          (values) => Math.max(...values)
+        ),
+        total
+      ),
+      ...factColumns(),
+    ],
+  };
+};
+
+/** The numeric columns a players-level row fills, in header order: amount, its
+ * per-second rate, and its share of that level's own total. Written once
+ * because BOTH metrics' `columnKeys("players")` promise this same shape and
+ * four different folds land on it — the two metrics' enemy sides, damage
+ * taken's friendly side, and the analysis machine's source grouping. They have
+ * to stay one shape or cells render under the wrong headers.
+ *
+ * `damageDone`'s friendly side is deliberately not a caller: it prints the
+ * backend-computed `dps` rather than deriving a rate from the fight duration. */
+export const playersColumns = (amount: number, total: number, fightDurationMs?: number): string[] => [
+  format(amount),
+  ratePerSecond(amount, fightDurationMs),
+  share(amount, total),
+];
+
+/** Rows for a set of ability (or member-skill) groups.
+ *
+ * With the collapse on, a group holds its cause's breakdown rows AND the echo
+ * rows attributed to it, so damage and hits sum without a special case — see
+ * `damageCells`, which the per-player children below share. `merged` follows
+ * the same toggle and decides which view those cells report: it is passed
+ * rather than inferred so a display rule never has to be read out of a keying
+ * rule.
+ *
+ * Exported for its own tests; the descriptor below is its only other caller —
+ * and damage declares `dataPath: "groups"`, so the analysis view builds its
+ * parent rows in `groupRows.ts` and never reaches `rows` at all. Only
+ * `children` is live here, which makes `merged` test-only on this path. It is
+ * carried anyway: the two paths fill one table, and a fold that could not
+ * report landings would be a trap the day the data path moves. */
+export const abilityRows = (
+  groups: AbilitySkills[],
+  total: number,
+  colorSlot: number,
+  pinnable: boolean,
+  merged: boolean
+): MetricRow[] =>
+  groups
+    .map(({ key, skills }) => ({
+      key: skillKey(key),
+      label: key,
+      ...damageCells(skills, total, merged),
+      pinOnClick: pinnable ? { ability: key } : null,
+      colorSlot,
+    }))
+    .sort((a, b) => b.value - a.value);
+
+/** What the pinned ability dealt to each enemy TYPE — the opposite direction
+ * from `enemyDealtRows` below, which asks what enemies dealt to the party.
+ *
+ * `SkillState.targets` is optional because cached payloads predate it, and it
+ * carries no per-enemy extremes — those columns are honestly blank rather than
+ * guessed at from the ability's own. Same-type spawns are already merged by the
+ * parser, so these rows name a type and pin nothing: the target pin selects a
+ * SPAWN, and a type cannot choose between two of them. */
+const enemyRows = (skills: SkillState[], total: number): MetricRow[] => {
+  const byType = new Map<string, { enemyType: EnemyType; damage: number; hits: number }>();
+  for (const skill of skills) {
+    for (const target of skill.targets ?? []) {
+      // JSON, not String(): EnemyType is `string | { Unknown: number }`, and
+      // String() renders every Unknown variant as "[object Object]", merging
+      // every unidentified spawn into one row.
+      const key = JSON.stringify(target.enemyType);
+      const found = byType.get(key);
+      if (found) {
+        found.damage += target.totalDamage;
+        found.hits += target.hits;
+      } else byType.set(key, { enemyType: target.enemyType, damage: target.totalDamage, hits: target.hits });
+    }
+  }
+
+  return [...byType.entries()]
+    .map(([key, { enemyType, damage, hits }]) => ({
+      key: enemyRowKey(enemyType),
+      label: key,
+      kind: "enemy" as const,
+      value: damage,
+      // Per-enemy breakdown rows never carry facts either — see `columnKeys`.
+      columns: [...damageColumns(damage, hits, NOT_RECORDED, NOT_RECORDED, total), ...factColumns()],
+      pinOnClick: null,
+      colorSlot: -1,
+    }))
+    .sort((a, b) => b.value - a.value);
+};
+
+/** Enemy types ranked by what they dealt TO the party, folded from the
+ * per-victim incoming breakdown — the opposite direction from `enemyRows`
+ * above, which asks what a pinned ability dealt to each enemy type. Empty on
+ * logs recorded before damage-taken capture (2026-08-04) — those recorded no
+ * incoming events at all, and the table's empty state says so.
+ *
+ * At the players level this answers one question with three columns (amount,
+ * rate, share), same as the friendly side. Below it, every OTHER damageDone
+ * row shape fills the full six-column set (see `damageColumns`), and this one
+ * must too or it renders three cells under a six-column header. Min stays
+ * blank there because `DamageTakenState` — unlike `SkillState` — never
+ * recorded a minimum; max is the largest single hit any breakdown row for
+ * that type carried, and unlike `SkillState.maxDamage` it is never `null` —
+ * `DamageTakenState` is a newer type with no legacy-payload gap to guard. */
+const enemyDealtRows = (players: ComputedPlayerState[], level: RowLevel, fightDurationMs?: number): MetricRow[] => {
+  const byType = new Map<string, { enemyType: EnemyType; damage: number; hits: number; maxDamage: number }>();
+  for (const player of players) {
+    for (const row of player.damageTakenBreakdown ?? []) {
+      const key = JSON.stringify(row.enemyType);
+      const found = byType.get(key);
+      if (found) {
+        found.damage += row.totalDamage;
+        found.hits += row.hits;
+        found.maxDamage = Math.max(found.maxDamage, row.maxDamage);
+      } else
+        byType.set(key, {
+          enemyType: row.enemyType,
+          damage: row.totalDamage,
+          hits: row.hits,
+          maxDamage: row.maxDamage,
+        });
+    }
+  }
+  const total = [...byType.values()].reduce((sum, { damage }) => sum + damage, 0);
+
+  return [...byType.entries()]
+    .map(([key, { enemyType, damage, hits, maxDamage }]) => ({
+      key: enemyRowKey(enemyType),
+      label: key,
+      kind: "enemy" as const,
+      value: damage,
+      // Incoming damage never carries facts — DamageTakenState is a different
+      // record from the direct-hit tallying `GroupFacts` reads.
+      columns: [
+        ...(level === "players"
+          ? playersColumns(damage, total, fightDurationMs)
+          : damageColumns(damage, hits, NOT_RECORDED, format(maxDamage), total)),
+        ...factColumns(),
+      ],
+      // The pin model has no enemy-type pin; the hover card decomposes instead.
+      pinOnClick: null,
+      colorSlot: -1,
+    }))
+    .sort((a, b) => b.value - a.value);
+};
+
+export const damageDone: MetricDescriptor = {
+  labelKey: "ui.logs.metric-damage-done",
+  supportsHostility: true,
+
+  // Players are ranked by damage and rate; below that a rate over one skill
+  // means little, so the second column becomes how often it landed and the
+  // spread of those hits follows. Share is last in both cases, of whatever the
+  // level's total is.
+  //
+  // One header for all three shapes of drill-down row: the level cannot say in
+  // advance whether it will decompose into member skills, enemies or players,
+  // and the columns line up under it either way — a shape with no extremes to
+  // report leaves those two cells blank rather than moving the ones after them.
+  //
+  // `showFacts` is the `show_damage_facts` setting, and it appends the SAME
+  // `FACT_COLUMN_KEYS` the cells come from (see `factColumns`, which is off by
+  // the same default). Both lists gate on one flag, so the WP%/BA% headers and
+  // the cells under them can only ever appear together.
+  columnKeys: (level, showFacts = false) => [
+    ...(level === "players"
+      ? ["ui.meter-columns.damage", "ui.meter-columns.dps", "ui.logs.column-share"]
+      : [
+          "ui.skill-columns.total",
+          "ui.skill-columns.hits",
+          "ui.skill-columns.min",
+          "ui.skill-columns.max",
+          "ui.skill-columns.average",
+          "ui.logs.column-share",
+        ]),
+    ...(showFacts ? FACT_COLUMN_KEYS : []),
+  ],
+
+  labelKind: (level) => (level === "players" ? "player" : "ability"),
+
+  // The only metric the parser records per enemy (`SkillTargetState`), so the
+  // only one whose card can break a row down by target.
+  card: {
+    amountKey: "ui.meter-columns.damage",
+    valueOf: (skill) => skill.totalDamage,
+    format,
+    perTarget: true,
+  },
+
+  rows: ({ players, level, pins, fightDurationMs, hostility, keying }): MetricRow[] => {
+    // The enemy side answers one question at every level — what each enemy
+    // dealt to the (scoped) party — so it ignores the drill level entirely
+    // except for which column shape that answer takes.
+    if (hostility === "enemy") return enemyDealtRows(players, level, fightDurationMs);
+
+    if (level === "players") {
+      const total = players.reduce((sum, p) => sum + p.totalDamage, 0);
+      return [...players]
+        .sort((a, b) => b.totalDamage - a.totalDamage)
+        .map((p) => ({
+          key: playerRowKey(p.index),
+          label: String(p.index),
+          value: p.totalDamage,
+          columns: [format(p.totalDamage), format(p.dps), share(p.totalDamage, total), ...factColumns()],
+          pinOnClick: { source: p.index },
+          colorSlot: p.partyIndex,
+        }));
+    }
+
+    // A source pinned but missing from the scoped party has genuinely nothing
+    // to show. NO source pinned is a different case: the ability sets the level
+    // and clearing the friendly only widens the scope to the whole party, so the
+    // rows stay the same rows, summed across everyone.
+    const owner = pins.source === null ? null : players.find((p) => p.index === pins.source);
+    if (pins.source !== null && !owner) return [];
+
+    const breakdown = owner ? owner.skillBreakdown : players.flatMap((p) => p.skillBreakdown);
+    const total = owner ? owner.totalDamage : players.reduce((sum, p) => sum + p.totalDamage, 0);
+    // A row summed across players belongs to no one party slot; -1 is the
+    // table's "no colour" and renders in its neutral ink.
+    const colorSlot = owner ? owner.partyIndex : -1;
+    // The landing view rides the same toggle the keying does — the two move
+    // together, or a row keyed by cause would still count events.
+    const merged = keying?.collapseSupplementary === true;
+
+    // The abilities level condenses into skill-group rows — see `abilityRowKey`.
+    // One row is what the user pins, so a row must be one thing: a group where
+    // the app groups, and otherwise one ability however many breakdown rows fed
+    // it.
+    if (level === "abilities")
+      return abilityRows(groupSkillsForRows(breakdown, keying), total, colorSlot, true, merged);
+
+    // The skills level is the same breakdown NOT condensed: the scoped fetch has
+    // already narrowed the party to the pinned row's member actions, so folding
+    // them again would redraw the row just clicked.
+    const members = mergeSkillsByAction(breakdown);
+    // More than one action behind the pinned row means it was a GROUP, and the
+    // members are what it was made of.
+    if (members.length > 1) return abilityRows(members, total, colorSlot, false, merged);
+
+    // One action behind the pinned row: restating it as a single row says
+    // nothing the row above it did not. With a friendly pinned, Warcraft Logs
+    // turns to the dimension the pins have left free and lists what the ability
+    // HIT — so do that.
+    //
+    // Only with an owner. Summed across the party the row is already an answer
+    // to a different question ("what did this ability do for everyone"), and
+    // the per-enemy breakdown behind it cannot say who dealt which part of it.
+    //
+    // A log saved before `SkillState.targets` existed has no enemies to list;
+    // the single row is still the honest floor.
+    if (owner) {
+      const enemies = enemyRows(breakdown, total);
+      if (enemies.length > 0) return enemies;
+    }
+    return abilityRows(members, total, colorSlot, false, merged);
+  },
+
+  // The table's in-place nesting (Package C): a party-wide ability row splits
+  // into one child per player who used it, out of the scoped derived state —
+  // synchronously, no new fetch. With a source pinned the groups-path parent
+  // already carries its member VARIANTS as `MetricRow.children`, so this
+  // answers null and the table falls back to them. The enemy side's ability
+  // rows are enemy ATTACKS, and their honest per-source split is per SPAWN —
+  // which `DamageTakenState` does not record — so they stay leaves rather
+  // than pretending victims are sources.
+  children: ({ row, players, level, pins, hostility, keying }): MetricRow[] | null => {
+    if (level !== "abilities" || hostility === "enemy" || pins.source !== null) return null;
+    const key = skillKeyPayload(row.key);
+    if (key === null) return null;
+    const total = players.reduce((sum, player) => sum + player.totalDamage, 0);
+    // The same flag `rows` derives, spelled the same way — the parent above
+    // these children reads the landing view off this one toggle.
+    const merged = keying?.collapseSupplementary === true;
+    return players
+      .map((player) => ({ player, skills: skillsForAbilityKey(player.skillBreakdown, key, keying) }))
+      .filter(({ skills }) => skills.length > 0)
+      .map(
+        ({ player, skills }): MetricRow => ({
+          key: playerRowKey(player.index),
+          label: String(player.index),
+          kind: "player",
+          // A child is a table bar too, so it reads the same cells its parent
+          // does — over THIS player's skills, which is what makes the section a
+          // split of the row rather than a restatement of it.
+          ...damageCells(skills, total, merged),
+          // Clicking a player child pins that player — the machine keeps the
+          // ability free, so the next state is that player's drill.
+          pinOnClick: { source: player.index },
+          colorSlot: player.partyIndex,
+        })
+      )
+      .sort((a, b) => b.value - a.value);
+  },
+};

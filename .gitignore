@@ -1,0 +1,63 @@
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+.vscode
+node_modules
+dist
+dist-ssr
+*.local
+
+# Per-machine Claude Code permissions, not shared project config
+.claude/settings.local.json
+
+# Editor directories and files
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+*.dll
+*.gbfr
+**/target/
+
+# Generated build artifact (built by scripts/build.ps1; also matched by *.dll above)
+src-tauri/hook.dll
+
+# Local reference data, not part of the app
+docs/damage-calculators/
+
+# Superpowers specs/plans are local working notes — never commit them
+docs/superpowers/
+
+# Python bytecode caches for scripts/*.py
+__pycache__/
+
+# CI-only Tauri config overlay (carries bundle.windows.signCommand), written
+# by .github/workflows/release.yaml at build time — never committed
+.tauri-release-config.json
+
+# Tauri updater signing keys — NEVER commit the private key
+.tauri/
+*.key
+*.key.pub
+/.worktrees
+
+# Brainstorming companion working files
+.superpowers/
+
+# Local scratch: full-res UI atlas dumps extracted from the game archive.
+# Large (~400MB) and not ours to redistribute - never commit.
+/icon-export/
+
+# Local machine config (logs.db path for scripts/log-size-report.mjs)
+.env

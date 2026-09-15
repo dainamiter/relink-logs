@@ -1,0 +1,77 @@
+import { describe, expect, it } from "vitest";
+
+import { compareVersions, isNewVersion, NEW_FEATURES, sectionNewIds } from "./newFeatures";
+import { SETTINGS_SECTIONS } from "./pages/Settings";
+
+describe("NEW_FEATURES", () => {
+  it("shows the toolbox + overmastery predictor chips in the 1.10.0 release that ships them", () => {
+    expect(isNewVersion(NEW_FEATURES["toolbox"], "1.10.0")).toBe(true);
+    expect(isNewVersion(NEW_FEATURES["overmastery-predictor"], "1.10.0")).toBe(true);
+  });
+
+  /** Both halves of the cheat-audit story are chipped together: the page that
+   * produces the verdicts, and the setting that lets them be seen anywhere
+   * else. A chip on one without the other points at a feature the reader
+   * cannot switch on. */
+  it("chips the cheat audit and its visibility setting through the same release window", () => {
+    expect(isNewVersion(NEW_FEATURES["cheat-audit"], "1.12.5")).toBe(true);
+    expect(isNewVersion(NEW_FEATURES["flagged-builds-setting"], "1.12.5")).toBe(true);
+    // And in an RC of it, which is what a tester actually runs.
+    expect(isNewVersion(NEW_FEATURES["flagged-builds-setting"], "1.12.5-2")).toBe(true);
+  });
+
+  it("chips both rebuilt settings sections in the release that ships them", () => {
+    expect(isNewVersion(NEW_FEATURES["meter-settings"], "1.12.5")).toBe(true);
+    expect(isNewVersion(NEW_FEATURES["overlay-settings"], "1.12.5")).toBe(true);
+    expect(isNewVersion(NEW_FEATURES["meter-settings"], "1.12.7")).toBe(false);
+  });
+
+  // The settings tab is the only marker visible before the rail is opened, so
+  // every chipped section has to reach it.
+  it("carries the real settings sections up to the settings tab", () => {
+    expect(sectionNewIds("settings", SETTINGS_SECTIONS)).toEqual(
+      expect.arrayContaining(["settings", "meter-settings", "overlay-settings"])
+    );
+  });
+});
+
+describe("compareVersions", () => {
+  it("orders version triples numerically", () => {
+    expect(compareVersions("1.9.6", "1.9.6")).toBe(0);
+    expect(compareVersions("1.9.6", "1.10.0")).toBeLessThan(0);
+    expect(compareVersions("2.0.0", "1.99.99")).toBeGreaterThan(0);
+    expect(compareVersions("1.9.10", "1.9.9")).toBeGreaterThan(0); // numeric, not lexicographic
+  });
+
+  it("reads an RC build as its base release", () => {
+    // Every build between stable releases is `X.Y.Z-N`; parsing "4-5" as a
+    // number would poison the comparison with NaN and hide every chip.
+    expect(compareVersions("1.12.4-5", "1.12.4")).toBe(0);
+    expect(compareVersions("1.12.4-5", "1.12.5")).toBeLessThan(0);
+    expect(compareVersions("1.12.4-5", "1.12.3")).toBeGreaterThan(0);
+  });
+});
+
+describe("isNewVersion", () => {
+  it("a range is new between its bounds, inclusive", () => {
+    const range = { from: "1.9.6", until: "1.9.8" };
+    expect(isNewVersion(range, "1.9.5")).toBe(false); // before the feature ships
+    expect(isNewVersion(range, "1.9.6")).toBe(true);
+    expect(isNewVersion(range, "1.9.7")).toBe(true);
+    expect(isNewVersion(range, "1.9.8")).toBe(true);
+    expect(isNewVersion(range, "1.9.9")).toBe(false);
+  });
+
+  it("an RC of the release that ships a feature is inside the window", () => {
+    expect(isNewVersion({ from: "1.12.4", until: "1.12.5" }, "1.12.4-5")).toBe(true);
+    expect(isNewVersion({ from: "1.12.4", until: "1.12.5" }, "1.12.3-8")).toBe(false);
+    expect(isNewVersion({ from: "1.12.4", until: "1.12.5" }, "1.12.6-1")).toBe(false);
+  });
+
+  it("range bounds are optional", () => {
+    expect(isNewVersion({ until: "1.9.8" }, "1.0.0")).toBe(true);
+    expect(isNewVersion({ until: "1.9.8" }, "1.9.9")).toBe(false);
+    expect(isNewVersion({ from: "1.9.6" }, "1.9.5")).toBe(false);
+    expect(isNewVersion({ from: "1.9.6" }, "2.0.0")).toBe(true);
+  });
+});

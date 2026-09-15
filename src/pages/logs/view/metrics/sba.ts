@@ -1,0 +1,359 @@
+import type { AbilitySeries, ComputedPlayerState, SbaSourceState } from "@/types";
+import { share } from "@/utils";
+
+import { groupSkillsForRows, mergeSkillsByAction } from "../abilitySkills";
+import { SBA_UNATTRIBUTED_KEY, playerRowKey, sbaCausePayload, sbaCauseRowKey, skillKey } from "../rowKey";
+import type { MetricDescriptor, MetricRow } from "./types";
+
+/** Shown where the backend served no generated total — a log served by a
+ * binary older than the field. A zero would claim the player built no gauge. */
+const NOT_RECORDED = "—";
+
+/** Gauge units are tenths of a percent; sub-unit precision is noise at the
+ * magnitudes a fight produces, and a suffix would only lose precision. */
+const whole = (value: number): string => String(Math.round(value));
+
+/** Marks a figure the parser DEDUCED rather than the hook measured. A remote
+ * member's rows are inferred in full, so without this their gauge would read
+ * exactly like a local player's measured gauge. */
+const APPROXIMATE = "≈";
+
+/** A breakdown row's gauge: what was measured on it plus what was correlated
+ * with it. Summed because they answer the same question — this row's share of
+ * the player's bar — and a remote member has only the second kind, so ranking
+ * on the first alone leaves their whole table at zero. */
+const rowGauge = (skill: { sbaGenerated?: number; sbaInferred?: number }): number =>
+  (skill.sbaGenerated ?? 0) + (skill.sbaInferred ?? 0);
+
+/** The parser's deduced cause kinds (the Rust `sba_inference` module) — the
+ * only non-hit attribution a remote member can carry. */
+const INFERRED_CAUSE_KINDS = new Set<SbaSourceState["kind"]>(["inferredChainGrant", "inferredDamageTaken"]);
+
+/** Whether a player's INFERRED attribution stays hidden: none of their skill
+ * split was measured, so the deduction has no measured anchor.
+ *
+ * That is a remote party member: per-hit gauge exists only where the grant
+ * frame runs, so a local (or locally simulated) player's rows are measured
+ * whenever they are attributed at all. The analysis view drops such a player's
+ * inferred CONTENT — the `sbaInferred` shares and the `inferred*` cause rows —
+ * in the drilled table (this module), the hover card (`sbaCardSectionsFor`)
+ * and the drilled chart's bands (`useChartModel`) alike, because the inference
+ * has not yet survived a live online round, and an unverified deduction
+ * filling a whole breakdown reads as a measurement no matter how each row is
+ * marked. What the hook MEASURED for them (party awards, the quest-start
+ * grant, network `site` grants…) still renders: those rows predate the
+ * inference and are not its to hide. A local player's mixed rows keep their
+ * inferred shares (marked `≈`): there the measurements anchor the table. */
+export const sbaInferenceSuppressed = (player: Pick<ComputedPlayerState, "skillBreakdown">): boolean =>
+  !player.skillBreakdown.some((skill) => (skill.sbaGenerated ?? 0) !== 0);
+
+/** How a player's breakdown rows are valued under the given suppression
+ * verdict (`sbaInferenceSuppressed`, computed once per player by the caller):
+ * measured + inferred where the measurements anchor the table, measured alone
+ * where the inference is suppressed. Shared with the hover card so the two
+ * value one row alike. */
+export const rowGaugeFor = (
+  suppressed: boolean
+): ((skill: { sbaGenerated?: number; sbaInferred?: number }) => number) =>
+  suppressed ? (skill) => skill.sbaGenerated ?? 0 : rowGauge;
+
+/** Whether a `source:` row/band key names a DEDUCED cause. False for skill
+ * keys and for the measured causes — `suppressedSbaBands` uses this to decide
+ * which of a suppressed player's bands are the inference's to hide. */
+const isInferredSbaCauseKey = (rowKey: string): boolean => {
+  const payload = sbaCausePayload(rowKey);
+  return payload !== null && INFERRED_CAUSE_KINDS.has(payload.split(":")[0] as SbaSourceState["kind"]);
+};
+
+/** The cause rows a player's breakdown may show: everything measured, plus the
+ * inferred kinds only where the inference is shown at all (`suppressed` is the
+ * caller's one `sbaInferenceSuppressed` verdict). Shared with the hover card
+ * (`sbaCardSectionsFor`) so the two list the same causes. */
+export const shownSources = (player: Pick<ComputedPlayerState, "sbaSources">, suppressed: boolean): SbaSourceState[] =>
+  (player.sbaSources ?? []).filter(
+    (source) => source.generated !== 0 && !(suppressed && INFERRED_CAUSE_KINDS.has(source.kind))
+  );
+
+/** The drilled SBA chart's view of a suppressed player's bands — the chart
+ * half of the suppression policy this module owns for the table and the hover
+ * card, declared as `filterAbilitySeries` on the metric's capabilities so the
+ * chart model stays metric-agnostic.
+ *
+ * A remote member's SBA skill bands are the parser's deductions end to end,
+ * and the table suppresses that split until the inference is verified live
+ * (see `sbaInferenceSuppressed`). Folding those bands — the skill bands and
+ * the inferred-cause bands — back into the unattributed remainder keeps the
+ * two agreeing: the measured cause bands survive, and the remainder grows by
+ * exactly what the table's remainder row reabsorbed. A suppressed player with
+ * nothing measured loses all bands, and the chart falls back to the per-player
+ * gauge lines, matching the table's empty state. Under an ability pin the
+ * backend serves skill bands only, so there is no remainder to fold into — a
+ * suppressed player's bands simply drop.
+ *
+ * The folded bands are relabelled rather than summed here: `abilityBands`, the
+ * fold immediately downstream, already merges same-key cause bands zero-padded
+ * to the longest series. */
+export const suppressedSbaBands = (
+  player: Pick<ComputedPlayerState, "skillBreakdown">,
+  series: AbilitySeries[],
+  abilityPinned: boolean
+): AbilitySeries[] => {
+  if (!sbaInferenceSuppressed(player)) return series;
+  if (abilityPinned) return [];
+  const measured: AbilitySeries[] = [];
+  const folded: AbilitySeries[] = [];
+  for (const band of series) {
+    const isMeasured = band.kind === "cause" && band.key !== SBA_UNATTRIBUTED_KEY && !isInferredSbaCauseKey(band.key);
+    (isMeasured ? measured : folded).push(band);
+  }
+  if (measured.length === 0) return [];
+  return [
+    ...measured,
+    ...folded.map((band) => ({ kind: "cause" as const, key: SBA_UNATTRIBUTED_KEY, values: band.values })),
+  ];
+};
+
+/** Cause → i18n key. Exhaustive by construction: a kind with no entry here is a
+ * backend that shipped a cause the UI has not been taught, which reads as
+ * "Unidentified" rather than as a missing row. */
+const CAUSE_LABEL_KEYS: Record<SbaSourceState["kind"], string> = {
+  damageTaken: "ui.logs.sba-cause-damage-taken",
+  perfectGuard: "ui.logs.sba-cause-perfect-guard",
+  effect: "ui.logs.sba-cause-effect",
+  partyAward: "ui.logs.sba-cause-party-award",
+  directorAward: "ui.logs.sba-cause-director-award",
+  questStart: "ui.logs.sba-cause-quest-start",
+  perfectDodge: "ui.logs.sba-cause-perfect-dodge",
+  site: "ui.logs.sba-cause-site",
+  unknown: "ui.logs.sba-cause-unknown",
+  // Deduced by the parser, not read by the hook — the labels say so, because a
+  // reader has to be able to tell a correlation from a measurement.
+  inferredChainGrant: "ui.logs.sba-cause-inferred-chain-grant",
+  inferredDamageTaken: "ui.logs.sba-cause-inferred-damage-taken",
+};
+
+/** Effect-record keys we have SEEN live and identified. Everything else renders
+ * as "Effect 0x<key>" — an honest hash beats a guessed name. Add entries only
+ * from a live capture where the key co-occurred with a known sigil/effect. */
+const KNOWN_EFFECT_KEYS: Record<number, string> = {
+  0xdeadbeef: "ui.logs.sba-effect-test-entry", // wiring test only; never occurs in game
+  // The just-dodge handler's gauge record (v2.0.3 FUN_1426f9640, live log
+  // 1694). Newer hooks park the PerfectDodge cause directly; this entry names
+  // the logs stored in between.
+  0xd2c8e10a: "ui.logs.sba-cause-perfect-dodge",
+};
+
+/** The row key the unattributed remainder carries, shared with the backend's
+ * band of the same name so the two are one identity. */
+// Re-exported from the grammar's own module: `rowRefOf` has to know it too,
+// and a second spelling is how the two would come to disagree.
+export { SBA_UNATTRIBUTED_KEY };
+
+/** How to name a `source:` row key, or null when the key is not one.
+ *
+ * Exported because the drilled SBA CHART draws a band per cause and must name it
+ * exactly as the table names the row beneath it — the backend emits these keys
+ * in this same grammar (see `ability_charts.rs`), and re-deriving the naming at
+ * the chart would let a band and its row drift apart. */
+export const sbaCauseLabel = (
+  rowKey: string
+): { labelKey: string; labelParams?: Record<string, string | number> } | null => {
+  if (rowKey === SBA_UNATTRIBUTED_KEY) return { labelKey: "ui.logs.sba-unattributed" };
+  const payload = sbaCausePayload(rowKey);
+  if (payload === null) return null;
+
+  const [kind, rawId] = payload.split(":");
+  const id = rawId === undefined ? null : Number(rawId);
+
+  // `Effect(0)` is not an effect record: it is the residual bucket the hook
+  // parks when the game's generic add-gauge% API fires and no more specific
+  // grant site claimed the rise (see `OnGaugePercentGrantHook`). Through the
+  // effect template it rendered "Effect 0x0", which reads as a real record
+  // keyed zero rather than as "we could not tell". Distinct from
+  // `sba-cause-unknown`, which is a rise with nothing parked at all.
+  if (kind === "effect" && id === 0) return { labelKey: "ui.logs.sba-cause-generic-grant" };
+
+  const known = kind === "effect" && id !== null && KNOWN_EFFECT_KEYS[id];
+
+  return {
+    labelKey: known
+      ? KNOWN_EFFECT_KEYS[id as number]
+      : CAUSE_LABEL_KEYS[kind as SbaSourceState["kind"]] ?? CAUSE_LABEL_KEYS.unknown,
+    // Keys are hashes; hex is how every other tool in this repo prints them.
+    // Site tags are small ordinals and stay decimal.
+    labelParams:
+      id === null || known ? undefined : { id: kind === "effect" ? `0x${id.toString(16).toUpperCase()}` : id },
+  };
+};
+
+/** Rows for the causes no skill row can hold. Keyed by cause (plus id where one
+ * discriminates), so they never collide with `skill:` keys. */
+const sourceRows = (owner: ComputedPlayerState, total: number, suppressed: boolean): MetricRow[] =>
+  shownSources(owner, suppressed).map((source) => {
+    const key = sbaCauseRowKey(source.kind, source.id);
+    // Named through the shared namer rather than inline, so the row and the
+    // chart band above it cannot be labelled differently. Never null here:
+    // the key was just built in the `source:` grammar it parses.
+    const named = sbaCauseLabel(key);
+    return {
+      key,
+      label: source.kind,
+      labelKey: named?.labelKey ?? CAUSE_LABEL_KEYS.unknown,
+      labelParams: named?.labelParams,
+      value: source.generated,
+      columns: [whole(source.generated), share(source.generated, total)],
+      // A cause carries no target and no member skills to descend into.
+      pinOnClick: null,
+      // Not the player's own doing, so not their colour (see the remainder row).
+      colorSlot: -1,
+    };
+  });
+
+/** SBA is a per-player gauge, ranked by what each player GENERATED. Descending
+ * into a player splits their generation by ability, from the attributed
+ * per-hit gains the hook files against the causing skill's row.
+ *
+ * Only the local player has a split: a remote member's gauge is synced rather
+ * than granted by a hit the hook can see, so their skill rows are empty and
+ * their player row still carries the poll-derived total. The parser's
+ * inference does deduce a remote split, but it is suppressed here until
+ * verified live (see `sbaInferenceSuppressed`); their measured cause rows
+ * render regardless. */
+export const sba: MetricDescriptor = {
+  labelKey: "ui.logs.metric-sba",
+
+  // What the player rows' hover card measures. `valueOf` and `perTarget` are
+  // stated for completeness but go unread: the SBA card has its own builder
+  // (`sbaCardSectionsFor`), because a player's generated total also holds the
+  // non-hit causes and the unattributed remainder, neither of which is in
+  // `skillBreakdown` for a skill walk to reach. A gain carries no target.
+  card: {
+    amountKey: "ui.meter-columns.sba-generated",
+    valueOf: rowGauge,
+    format: whole,
+    perTarget: false,
+  },
+
+  columnKeys: (level) =>
+    level === "players"
+      ? ["ui.meter-columns.sba-generated", "ui.meter-columns.sba"]
+      : ["ui.meter-columns.sba-generated", "ui.logs.column-share"],
+
+  labelKind: (level) => (level === "players" ? "player" : "ability"),
+
+  rows: ({ players, level, pins }): MetricRow[] => {
+    if (level === "players") {
+      return [...players]
+        .map((player) => ({ player, generated: player.sbaGenerated }))
+        .sort((a, b) => (b.generated ?? b.player.sba) - (a.generated ?? a.player.sba))
+        .map(({ player, generated }) => ({
+          key: playerRowKey(player.index),
+          label: String(player.index),
+          // The bar ranks by contribution where it is known, and by the level
+          // where it is not — the honest fallback for an older payload.
+          value: generated ?? player.sba,
+          columns: [generated === undefined ? NOT_RECORDED : whole(generated), whole(player.sba)],
+          pinOnClick: { source: player.index },
+          colorSlot: player.partyIndex,
+        }));
+    }
+
+    // A gauge belongs to one player, never the party — unlike damage there is
+    // no "everyone's total" reading to fall back to, so no pinned source (or
+    // one absent from the scoped party) means there is nothing to show.
+    const owner = pins.source === null ? null : players.find((p) => p.index === pins.source);
+    if (!owner) return [];
+
+    // A remote member's deduced split stays hidden until the inference is
+    // verified live (`sbaInferenceSuppressed`): their rows are valued by the
+    // measured figure alone, so pure-inference rows vanish and only what the
+    // hook read — plus the remainder — renders, same as before the inference
+    // existed. With nothing measured at all, the empty state
+    // (`ui.logs.sba-no-breakdown`) is the honest reading.
+    const suppressed = sbaInferenceSuppressed(owner);
+    const gaugeOf = rowGaugeFor(suppressed);
+
+    const total = owner.sbaGenerated ?? 0;
+
+    // Condensed into skill-group rows until a group is PINNED, at which point
+    // the rows become that group's members — the same descent `stun` makes, and
+    // for the same reason: `levelFor` only yields "skills" for the target
+    // dimension, which neither of these tabs has.
+    const pinnedAbility = pins.ability !== null;
+    const fold = pinnedAbility ? mergeSkillsByAction : groupSkillsForRows;
+
+    const attributed = fold(owner.skillBreakdown)
+      .map(({ key, skills }) => {
+        const generated = skills.reduce((sum, skill) => sum + gaugeOf(skill), 0);
+        const inferred = suppressed ? 0 : skills.reduce((sum, skill) => sum + (skill.sbaInferred ?? 0), 0);
+        return { key, generated, inferred };
+      })
+      // A player with no attribution at all carries no attribution — filtered
+      // here rather than shown as a wall of honest zeros.
+      .filter(({ generated }) => generated !== 0)
+      .map(({ key, generated, inferred }) => ({
+        key: skillKey(key),
+        label: key,
+        value: generated,
+        // Marked where any of the figure was deduced: a remote member's rows
+        // are correlations, and presenting them identically to the local
+        // player's measured rows would be the one dishonesty here.
+        columns: [inferred > 0 ? `${APPROXIMATE}${whole(generated)}` : whole(generated), share(generated, total)],
+        // Pinnable into the group's members, like `stun`. A gain carries no
+        // target, so once the rows ARE those members there is nothing further
+        // to descend into.
+        pinOnClick: pinnedAbility ? null : { ability: key },
+        colorSlot: owner.partyIndex,
+      }));
+
+    // A pinned ability narrows to ONE group's members. The cause rows and the
+    // remainder describe the whole PLAYER — the remainder is measured against
+    // their polled total — so listing them beside one ability's members would
+    // make the column's share denominator mean two different things. The chart
+    // drops them for the same reason (see `build_ability_sba_chart`).
+    if (pinnedAbility) return [...attributed].sort((a, b) => b.value - a.value);
+
+    const sources = sourceRows(owner, total, suppressed);
+
+    return [...attributed, ...sources, ...unattributedRow([...attributed, ...sources], total, owner.sbaGenerated)].sort(
+      (a, b) => b.value - a.value
+    );
+  },
+};
+
+/** Gauge the split does not explain, as its own row — or nothing, where there
+ * is no honest figure to draw.
+ *
+ * The remainder is what neither a skill NOR a named cause explains: an
+ * ability row covers gauge granted by the player's own damaging hits, a
+ * source row covers the named non-hit causes (party awards, damage taken,
+ * quest start…), and this row is whatever the hook could not caption at all.
+ * Live log 1681 (captured before causes existed) puts it at 31-42% of each
+ * player's generated total; every named cause since shrinks it.
+ *
+ * Not drawn when: nothing is attributed (there is no split for it to be the
+ * remainder of, and the table's empty state explains that case), the log
+ * predates the generated total (no denominator — the "gap" would be the
+ * negative of what is attributed), or the gap is under a whole gauge unit
+ * (the column rounds, so the row would read 0). */
+const unattributedRow = (attributed: MetricRow[], total: number, generated: number | undefined): MetricRow[] => {
+  if (attributed.length === 0 || generated === undefined) return [];
+
+  const gap = total - attributed.reduce((sum, row) => sum + row.value, 0);
+  if (gap < 0.5) return [];
+
+  return [
+    {
+      key: SBA_UNATTRIBUTED_KEY,
+      // No ability to name, so the table names it (see `MetricRow.labelKey`).
+      label: "unattributed",
+      labelKey: "ui.logs.sba-unattributed",
+      value: gap,
+      columns: [whole(gap), share(gap, total)],
+      pinOnClick: null,
+      // No party slot: this is the one row that is not the player's doing, and
+      // it reads as the neutral remainder rather than more of their colour.
+      colorSlot: -1,
+    },
+  ];
+};

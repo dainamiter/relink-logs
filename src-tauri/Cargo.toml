@@ -1,0 +1,89 @@
+[package]
+name = "gbfr-logs"
+version = "1.12.16"
+default-run = "gbfr-logs"
+description = "Relink Logs"
+authors = ["you"]
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+[package.metadata.tauri-winres]
+CompanyName = "Scott Donnelly"
+OriginalFilename = "GBFR Logs.exe"
+Comments = "Source: https://github.com/villith/relink-logs"
+
+[build-dependencies]
+tauri-build = { version = "1.5", features = [] }
+
+[dependencies]
+anyhow = "1.0"
+futures = "0.3"
+protocol = { path = "../protocol" }
+game-reader = { path = "../game-reader" }
+sea-query = { version = "0" }
+sea-query-rusqlite = { version = "0", features = ["with-chrono"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tauri = { version = "1.5", features = [
+  "window-set-size",
+  "window-set-min-size",
+  "path-all",
+  "fs-read-file",
+  "updater",
+  "system-tray",
+  "window-show",
+  "window-minimize",
+  "window-maximize",
+  "window-start-dragging",
+  "window-unmaximize",
+  "window-hide",
+  "window-unminimize",
+  "window-close",
+  "shell-open",
+  "devtools",
+  "dialog",
+  "os-all",
+] }
+tauri-plugin-single-instance = { git = "https://github.com/tauri-apps/plugins-workspace", branch = "v1" }
+tauri-plugin-log = { git = "https://github.com/tauri-apps/plugins-workspace", branch = "v1" }
+tokio = { version = "1.0", features = ["full"] }
+tokio-util = { version = "0.7.11", features = ["codec"] }
+tokio-stream = "0.1.15"
+num_enum = "0.7.2"
+chrono = "0.4"
+rusqlite = { version = "0.30.0", features = ["bundled"] }
+rusqlite_migration = "1.1.0"
+zstd = "0.13.0"
+strum = "0.26"
+strum_macros = "0.26"
+cbor4ii = { version = "0.3.2", features = ["use_std", "serde1"] }
+log = "^0.4"
+
+[features]
+custom-protocol = ["tauri/custom-protocol"]
+# Offline research tooling (`parser::v1::audit`). Off in shipped builds — it has
+# no app caller, so gating it keeps a ~900-line analysis module out of the
+# parser's public surface instead of making every parser refactor carry it.
+diag = []
+
+[[example]]
+name = "damage_audit"
+required-features = ["diag"]
+
+[[example]]
+name = "gap_probe"
+required-features = ["diag"]
+
+[target.'cfg(windows)'.dependencies]
+dll-syringe = "0.15.2"
+interprocess = { version = "^2.0", features = ["tokio"] }
+pelite = "0.10.0"
+windows = { version = "0.52.0", features = [
+  "Win32_Foundation",
+  "Win32_System_Diagnostics_Debug",
+  "Win32_System_Diagnostics_ToolHelp",
+  "Win32_System_Threading",
+] }
+
+[dev-dependencies]
+tempfile = "3"

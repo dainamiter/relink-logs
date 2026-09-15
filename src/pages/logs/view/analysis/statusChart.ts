@@ -1,0 +1,99 @@
+import type { StatusInterval } from "@/types";
+
+import { isStatusPin, statusPinKey } from "../statusUptime";
+
+/** One chart overlay band, ready to plot: a stable series key, the name the
+ * legend shows, and one value per bucket — the shape the group bands and the
+ * status stacks share, so the two overlays stay one branch at the call site. */
+export type DrillSeries = {
+  key: string;
+  label: string;
+  values: number[];
+  /** Ranked past the chart's band cap. Plotted, but hidden by default and
+   * rolled into the `other` band until the legend switches it on — see
+   * `chartRollup`. Absent on every series a producer does not cap. */
+  tail?: boolean;
+};
+
+/** One holder's stack count over the fight, one value per chart bucket. */
+export type StatusSeries = DrillSeries;
+
+/** Per-holder stack counts for the pinned effect, bucketed for the chart.
+ *
+ * This is the plot Warcraft Logs switches to when a buff is selected: one
+ * series per holder, each carrying that holder's own stack count. How they
+ * COMPOSE is the user's choice — the chart's Normal | Stacked control, opening
+ * on Normal — so the series either overlap (each height is one holder's depth)
+ * or sum (the height is what the party held between them). Our chart previously
+ * did not change at all on a status drill — the table dropped to holder rows
+ * beside a plot still drawing whole-fight DPS.
+ *
+ * A stack count belongs on an axis rather than in a table cell: it varies
+ * across a window, so a cell can only report the peak. The band shading over
+ * the DPS plot (`bandOpacity`) says the same thing far more coarsely.
+ *
+ * This is the ONLY overlay the aura tabs draw. Unpinned they used to plot the
+ * effects themselves as holder counts, which answered a question the table
+ * beside it answers better while hiding the damage those effects are read
+ * against; now the tab keeps the metric's own damage plot until an effect is
+ * pinned.
+ *
+ * Where one holder's windows OVERLAP the deeper stack wins rather than the sum:
+ * two sources of one effect on one actor is one effect at whatever depth it
+ * reached, exactly as `uptimeMs` merges rather than adds their durations.
+ *
+ * Holders are ranked by bucket coverage, longest first, so the deepest band
+ * sits at the bottom of the stack and the plot does not reshuffle as the
+ * pointer moves. */
+export const buildStatusSeries = ({
+  intervals,
+  pinnedKey,
+  bucketMs,
+  len,
+  holderOf,
+}: {
+  intervals: StatusInterval[];
+  /** The pinned effect. A non-status pin (or none) yields no series at all —
+   * the caller then keeps whatever chart it was already drawing. */
+  pinnedKey: string | null;
+  bucketMs: number;
+  /** How many buckets the chart holds. */
+  len: number;
+  holderOf: (interval: StatusInterval) => { key: string; label: string };
+}): StatusSeries[] => {
+  if (!isStatusPin(pinnedKey) || len <= 0 || bucketMs <= 0) return [];
+
+  const byHolder = new Map<string, StatusSeries>();
+
+  for (const interval of intervals) {
+    if (statusPinKey(interval) !== pinnedKey) continue;
+
+    const { key, label } = holderOf(interval);
+    let series = byHolder.get(key);
+    if (!series) {
+      series = { key, label, values: new Array<number>(len).fill(0) };
+      byHolder.set(key, series);
+    }
+
+    // The hook reports 1 for every status `status.tbl` does not mark HasLevels,
+    // so a missing or zero count is one stack rather than none — the same rule
+    // `toBands` follows.
+    const stacks = Math.max(1, interval.maxStacks);
+    const first = Math.max(0, Math.floor(interval.startMs / bucketMs));
+    // Inclusive of the bucket the window ends in, so a sub-bucket window still
+    // colours the moment it happened rather than rounding away to nothing.
+    const last = Math.min(len - 1, Math.floor((interval.endMs - 1) / bucketMs));
+
+    for (let bucket = first; bucket <= last; bucket += 1) {
+      series.values[bucket] = Math.max(series.values[bucket], stacks);
+    }
+  }
+
+  // Coverage is counted ONCE per series and carried through the sort, for the
+  // reason `byTotalDescending` spells out next door: a comparator that recounted
+  // would allocate and walk two whole bucket arrays on every comparison.
+  return [...byHolder.values()]
+    .map((series) => ({ series, covered: series.values.reduce((n, value) => (value ? n + 1 : n), 0) }))
+    .sort((a, b) => b.covered - a.covered)
+    .map(({ series }) => series);
+};

@@ -1,0 +1,662 @@
+name: Release
+
+# Branch model (versions are managed by CI — do not hand-bump them):
+#
+#   PRs target dev (the default branch). A push to dev BUILDS the full
+#   two-platform bundle and leaves it as GitHub Actions artifacts on the run.
+#   It does NOT publish a release. Testers take dev builds from the run's
+#   artifacts.
+#
+#   Publishing is always the "Run workflow" button, whose `publish` input
+#   picks what comes out:
+#     stable — strip the RC suffix, require the human-written CHANGELOG.md
+#              section for that version (it becomes the release body and the
+#              in-app update prompt), publish the release, fast-forward main.
+#     rc     — publish the next X.Y.Z-N as a GitHub *prerelease*: downloadable
+#              for testing, but invisible to installed apps, because GitHub
+#              never serves prereleases from releases/latest (the updater
+#              endpoint).
+#     none   — build only, same as a push. Useful to re-check a build.
+#
+#   Why publishing is opt-in rather than automatic on every push: each
+#   published build puts a brand-new, zero-prevalence hook.dll hash in front
+#   of every AV engine's telemetry, and low prevalence is precisely what the
+#   generic ML detections score on. Publishing a release per dev merge kept
+#   the file permanently un-established. The RC channel still exists — it is
+#   just deliberate now.
+#
+#   Because RC numbers are derived from the TAG list and only a publish
+#   creates a tag, several dev pushes in a row compute the same X.Y.Z-N, the
+#   version files already carry it, and no bump commit is made. That is
+#   intended: the RC number advances when an RC is actually published.
+#
+#   main is a pointer to the last released state of dev — always an ancestor
+#   of dev, so the branches cannot diverge and nothing ever needs merging
+#   back. Never push to main directly: the promote job's plain (non-force)
+#   push will refuse to move a diverged main.
+#
+#   Version choice on dev: the base is whatever the files carry when it is
+#   ahead of the newest stable tag — set e.g. 1.13.0 in a PR to make the next
+#   release minor/major — otherwise the newest stable tag plus a patch bump.
+#   The RC number is the next -N not already tagged. N is numeric because WiX
+#   turns it into the MSI ProductVersion's 4th field and rejects -rc.N style.
+#
+#   CI's pushes to dev (RC bumps and the stable strip) go over SSH with the
+#   RELEASE_DEPLOY_KEY write deploy key: dev and main sit behind rulesets
+#   (PR required + verified signatures), personal repos cannot grant the
+#   Actions app a ruleset bypass, but a deploy key CAN be a bypass actor.
+#   Deploy-key pushes DO trigger workflows (unlike GITHUB_TOKEN), so every
+#   CI-authored commit starts with "chore(release):" and the version job
+#   skips such pushes. The release tag is created atomically with the GitHub
+#   release (gh release create --target), so a failed build strands nothing;
+#   pushing again (or re-dispatching) retries.
+#
+# Signing: minisign (TAURI_PRIVATE_KEY) ONLY — what the in-app updater
+# checks. The bundler applies it to the updater artifacts.
+#
+# There is deliberately NO Authenticode signing here. The Azure Trusted
+# Signing account was suspended and its certificate revoked, and a signature
+# from a revoked certificate is worse than none at all: Windows resolves it to
+# CERT_E_REVOKED, which SmartScreen and Defender both treat as a hard fail,
+# whereas an unsigned binary is merely unknown. Do NOT re-add signing with a
+# replacement certificate until the Microsoft malware determination on
+# hook.dll is reversed — a new certificate issued to the same publisher
+# identity is liable to be revoked again, and each attempt burns the identity
+# further. The removed steps are recoverable from git history (the
+# azure/trusted-signing-action step here and scripts/ci-sign.ps1).
+#
+# The build fans out across jobs. build-hook builds hook.dll TWICE, because
+# the two platforms need genuinely different binaries:
+#   hook-dll-windows — injected into the game process on Windows.
+#   hook-dll-proton  — `--features proton`, deployed by the Linux app into the
+#                      Proton game folder as the dinput8 proxy.
+# The proton feature adds a DirectInput8Create export, a LoadLibraryW on a
+# hardcoded system32 path, and a localhost TCP listener. On Windows that code
+# never ran (is_wine() is false) but still shipped, and it is the exact triad
+# AV heuristics read as a DLL-hijack backdoor — so the Windows DLL no longer
+# contains it. Both artifacts are still named hook.dll, which is what the app
+# resolves as a Tauri resource on both platforms.
+#
+# build-windows and build-linux run in parallel, publish assembles the
+# two-platform latest.json and creates the GitHub release (only when the
+# dispatch asked for one), then promote fast-forwards main on stables.
+
+on:
+  push:
+    branches:
+      - dev
+  workflow_dispatch: # the release button
+    inputs:
+      publish:
+        description: "What to publish (build-only otherwise)"
+        type: choice
+        default: stable
+        options:
+          - stable
+          - rc
+          - none
+
+# Rapid merges must not race the version computation or publish the same
+# version twice.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  version:
+    # Recursion guard: CI's own deploy-key pushes (RC bumps, the stable strip)
+    # start with "chore(release):" and must not trigger another release. The
+    # author check matters: "chore(release):" is also a plausible human commit
+    # subject, and matching on the message alone would silently skip the whole
+    # release for that push.
+    if: >-
+      ${{ github.event_name == 'workflow_dispatch' ||
+          !(startsWith(github.event.head_commit.message, 'chore(release):') &&
+            github.event.head_commit.author.email == '41898282+github-actions[bot]@users.noreply.github.com') }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read # pushes go over SSH with the deploy key, not GITHUB_TOKEN
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+      sha: ${{ steps.v.outputs.sha }}
+      prerelease: ${{ steps.v.outputs.prerelease }}
+      publish: ${{ steps.v.outputs.publish }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The branch, not the push SHA: the bump commit must land on the
+          # branch tip, and the build then uses that exact commit.
+          ref: dev
+          fetch-depth: 0 # next-version.mjs needs the full tag list
+
+      # Rulesets on dev and main block direct pushes; the write deploy key is
+      # a ruleset bypass actor, so CI pushes authenticate with it over SSH.
+      # Fetches keep using GITHUB_TOKEN via the https remote.
+      - name: Use the release deploy key for pushes
+        shell: bash
+        env:
+          RELEASE_DEPLOY_KEY: ${{ secrets.RELEASE_DEPLOY_KEY }}
+        run: |
+          if [[ -z "$RELEASE_DEPLOY_KEY" ]]; then
+            echo "::error::RELEASE_DEPLOY_KEY secret is missing - CI cannot push version bumps."
+            exit 1
+          fi
+          mkdir -p "$HOME/.ssh"
+          printf '%s\n' "$RELEASE_DEPLOY_KEY" > "$HOME/.ssh/release_bot"
+          chmod 600 "$HOME/.ssh/release_bot"
+          git remote set-url --push origin "git@github.com:$GITHUB_REPOSITORY.git"
+          echo "GIT_SSH_COMMAND=ssh -i $HOME/.ssh/release_bot -o StrictHostKeyChecking=accept-new" >> "$GITHUB_ENV"
+
+      - name: Compute next version and commit the bump
+        id: v
+        shell: bash
+        run: |
+          file_version="$(node -p "require('./package.json').version")"
+
+          # A push is always build-only; a dispatch says what it wants.
+          if [[ "$GITHUB_EVENT_NAME" == "workflow_dispatch" ]]; then
+            mode="${{ inputs.publish }}"
+            if [[ "$GITHUB_REF_NAME" != "dev" ]]; then
+              echo "::error::Releases are dispatched from the dev branch, not $GITHUB_REF_NAME."
+              exit 1
+            fi
+          else
+            mode=none
+          fi
+
+          if [[ "$mode" == "stable" ]]; then
+            prerelease=false
+            publish=true
+            next="$(node scripts/next-version.mjs main "$file_version")"
+            if git rev-parse -q --verify "refs/tags/$next" >/dev/null; then
+              echo "::error::$next is already released - merge new work into dev before dispatching a release."
+              exit 1
+            fi
+            # Gate BEFORE committing anything: the section is the release
+            # body, and it must be written by a human. The dispatch simply
+            # fails here until the changelog exists on dev.
+            node scripts/extract-changelog.mjs "$next" > /dev/null
+          else
+            prerelease=true
+            if [[ "$mode" == "rc" ]]; then publish=true; else publish=false; fi
+            next="$(git tag | node scripts/next-version.mjs dev "$file_version")"
+          fi
+
+          if [[ "$publish" == "true" ]]; then
+            echo "Releasing $next (files carried $file_version)"
+          else
+            echo "Build-only run for $next (files carried $file_version); nothing will be published"
+          fi
+          # Run unconditionally, even when $next already equals $file_version:
+          # set-version.mjs verifies that ALL five files carry the version, so
+          # this is the only thing that enforces the "they must always agree"
+          # invariant. Committing is then gated on whether anything actually
+          # changed, which also makes a re-run of an already-bumped commit a
+          # no-op instead of an empty commit.
+          node scripts/set-version.mjs "$next"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add package.json package-lock.json src-tauri/tauri.conf.json src-tauri/Cargo.toml Cargo.lock
+          if ! git diff --cached --quiet; then
+            git commit -m "chore(release): $next"
+            # A human push can race ours; rebase the bump onto it and retry.
+            pushed=false
+            for i in 1 2 3; do
+              if git push origin HEAD:dev; then pushed=true; break; fi
+              # Bare `git pull` here would abort the step under `set -e`,
+              # skipping the remaining attempts AND the error message below.
+              if ! git pull --rebase origin dev; then
+                git rebase --abort || true
+                echo "::error::could not rebase the version bump onto dev (conflict) - resolve by hand"
+                exit 1
+              fi
+            done
+            if [[ "$pushed" != "true" ]]; then
+              echo "::error::could not push the version-bump commit to dev"
+              exit 1
+            fi
+          fi
+
+          {
+            echo "version=$next"
+            echo "prerelease=$prerelease"
+            echo "publish=$publish"
+            echo "sha=$(git rev-parse HEAD)"
+          } >> "$GITHUB_OUTPUT"
+
+  # hook.dll is built twice — once per platform — because the Proton build
+  # carries a dinput8 proxy export and a TCP transport that must NOT ship in
+  # the injected Windows DLL. See the header comment. Both artifacts keep the
+  # name hook.dll: that is the Tauri resource name the app resolves on both
+  # platforms (on Linux it is then copied into the game folder as
+  # dinput8.dll).
+  build-hook:
+    needs: version
+    runs-on: windows-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.version.outputs.sha }} # the version-bump commit
+
+      # For the surface check below. No npm cache: this job never installs
+      # dependencies, and the check script has none.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      # Install exactly the toolchain pinned in rust-toolchain.toml. No
+      # `rustup update nightly`: that installs the day's latest nightly, which
+      # the build (pinned) never uses but which lands in rust-cache's
+      # environment hash — churning the cache key daily and forcing cold
+      # builds.
+      - name: Install pinned Rust toolchain
+        shell: bash
+        run: |
+          rustup set auto-self-update disable
+          rustup toolchain install
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+
+      # Both builds write the same target/release/hook.dll, so each is copied
+      # aside immediately after it is produced.
+      # Deliberately NO version env: nothing about the release version reaches
+      # hook.dll, so a release that did not touch the hook ships a byte-
+      # identical DLL and keeps the antivirus prevalence the last one earned.
+      # Staleness is detected by protocol::TOOLBOX_PROTOCOL_VERSION (a content
+      # hash of the wire crate), not by comparing versions — see
+      # src-hook/build.rs. `eject` ships the control channel that lets the app
+      # graceful-refresh the hook without a game restart.
+      - name: Build hook DLL (Windows — no proton)
+        run: cargo build --release --package hook --features eject
+      - name: Stage the Windows hook
+        shell: bash
+        run: mkdir -p out/windows && cp target/release/hook.dll out/windows/hook.dll
+
+      - name: Build hook DLL (Proton)
+        run: cargo build --release --package hook --features eject,proton
+      - name: Stage the Proton hook
+        shell: bash
+        run: mkdir -p out/proton && cp target/release/hook.dll out/proton/hook.dll
+
+      # Guard the whole point of the split: if the Windows DLL ever regains
+      # the Proton surface (someone drops a #[cfg], or a call site names a TCP
+      # constant again and leaves the literal in the string table), fail here
+      # rather than shipping it and discovering it in a VirusTotal score.
+      # Byte-scan, not a source grep: what matters is what is IN the artifact.
+      - name: Assert the Windows hook carries no Proton surface
+        shell: bash
+        run: node scripts/check-hook-surface.mjs out/windows/hook.dll out/proton/hook.dll
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: hook-dll-windows
+          path: out/windows/hook.dll
+          if-no-files-found: error
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: hook-dll-proton
+          path: out/proton/hook.dll
+          if-no-files-found: error
+
+  build-windows:
+    needs: [version, build-hook]
+    runs-on: windows-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.version.outputs.sha }} # the version-bump commit
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      # Install exactly the toolchain pinned in rust-toolchain.toml. No
+      # `rustup update nightly`: that installs the day's latest nightly, which
+      # the build (pinned) never uses but which lands in rust-cache's
+      # environment hash — churning the cache key daily and forcing cold
+      # builds.
+      - name: Install pinned Rust toolchain
+        shell: bash
+        run: |
+          rustup set auto-self-update disable
+          rustup toolchain install
+
+      # Default mapping (`. -> target`): the cargo workspace root is the repo
+      # root — that's where target/ lives. Note the RC version bump commits a
+      # new Cargo.lock every run, so the exact key always misses; restores
+      # come from the prefix fallback and a fresh cache is saved each release.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+
+      # No node_modules cache here (unlike ci.yaml): the version bump rewrites
+      # package-lock.json every release, so a lockfile-keyed cache would never
+      # hit and the save would cost time on every run.
+      - name: Install npm dependencies
+        run: npm ci
+
+      # The hook goes to BOTH paths: src-tauri/hook.dll is the bundled
+      # resource, and target/release/hook.dll is what build.rs copies over it
+      # during `tauri build` — rust-cache could otherwise restore a stale
+      # hook.dll there (possibly a Proton-feature one from an earlier run) and
+      # build.rs would clobber the correct one with it.
+      - name: Stage hook.dll (Windows build)
+        uses: actions/download-artifact@v4
+        with:
+          name: hook-dll-windows
+          path: src-tauri
+      - name: Mirror hook.dll to the cargo output path
+        shell: bash
+        run: mkdir -p target/release && cp src-tauri/hook.dll target/release/hook.dll
+
+      # The frontend is built here for clearer failure attribution; the
+      # overlay config disables beforeBuildCommand so the bundler doesn't
+      # rebuild it. There is no bundle.windows.signCommand any more — see the
+      # header comment on why Authenticode signing is gone.
+      - name: Build frontend and write CI build config
+        shell: bash
+        run: |
+          npm run build
+          echo '{"build":{"beforeBuildCommand":""}}' > .tauri-release-config.json
+
+      # One pass: compile → bundle MSI → zip the MSI as the updater artifact →
+      # minisign it with TAURI_PRIVATE_KEY. The updater key is unencrypted,
+      # hence the empty TAURI_KEY_PASSWORD.
+      - name: Build and bundle app
+        run: npx tauri build -b msi,updater --config .tauri-release-config.json
+        env:
+          TAURI_PRIVATE_KEY: ${{ secrets.TAURI_PRIVATE_KEY }}
+          # Resolves to "" while the key is unencrypted (the secret does not
+          # exist), but routing it through a secret means rotating to a
+          # passphrase-protected key is a secrets change, not a workflow edit.
+          TAURI_KEY_PASSWORD: ${{ secrets.TAURI_KEY_PASSWORD }}
+
+      # Authenticode is gone, so the only signature left to check is the
+      # updater's minisign. The MSI count is still asserted explicitly: an
+      # empty glob must not let this step pass without checking anything.
+      - name: Verify the bundle and its updater signature
+        shell: pwsh
+        run: |
+          $msi = @(Get-ChildItem "target/release/bundle/msi/*.msi")
+          if ($msi.Count -ne 1) { throw "expected exactly 1 MSI, found $($msi.Count)" }
+          $zip = Get-ChildItem "target/release/bundle/msi/*.msi.zip" | Select-Object -First 1
+          if (-not $zip) { throw "bundler did not produce the updater .msi.zip" }
+          if (-not (Test-Path "$($zip.FullName).sig")) { throw "bundler did not minisign the updater artifact" }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-bundle
+          path: |
+            target/release/bundle/msi/*.msi
+            target/release/bundle/msi/*.msi.zip
+            target/release/bundle/msi/*.msi.zip.sig
+          if-no-files-found: error
+
+  build-linux:
+    needs: [version, build-hook]
+    # 22.04, not -latest: Tauri v1 needs webkit2gtk-4.0, which Ubuntu 24.04
+    # no longer ships (it only has 4.1).
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.version.outputs.sha }} # the version-bump commit
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      # webkit2gtk is pinned to the jammy release pocket (2.36): the AppImage
+      # bundles whatever webkit CI installs, and jammy-updates has moved to
+      # 2.50, where DMA-BUF is the only rendering path (the X11/WPE renderers
+      # and WEBKIT_DISABLE_DMABUF_RENDERER were removed in 2.44). On hosts
+      # where its EGL/GBM init fails — NVIDIA proprietary, newer Mesa — the
+      # web process aborts with "Could not create default EGL display:
+      # EGL_BAD_PARAMETER" and the app shows nothing. 2.36 predates that
+      # renderer and falls back gracefully everywhere (field-verified failure
+      # on two of three Linux testers; same pin as gitbutler#5301).
+      - name: Install Tauri v1 Linux dependencies
+        run: |
+          # A stalled mirror can hang apt with no output and no error for as
+          # long as CI lets it run — the 2026-08-18 build-linux runs sat for
+          # 45+ minutes on a stalled archive.ubuntu.com fetch after the local
+          # azure mirror failed. Acquire::Retries doesn't cover this — it only
+          # retries an acquire that already failed, not one that never
+          # returns — so `timeout` is the actual backstop, retried from
+          # outside since a mirror stall is often transient.
+          retry() {
+            local attempt=1
+            until "$@"; do
+              if [ "$attempt" -ge 3 ]; then
+                echo "::error::giving up after 3 attempts: $*" >&2
+                return 1
+              fi
+              echo "attempt $attempt failed, retrying in 10s: $*" >&2
+              attempt=$((attempt + 1))
+              sleep 10
+            done
+          }
+
+          retry sudo timeout 60 apt-get update
+          retry sudo timeout 120 apt-get install -y --allow-downgrades \
+            libwebkit2gtk-4.0-dev=2.36.0-2ubuntu1 \
+            libwebkit2gtk-4.0-37=2.36.0-2ubuntu1 \
+            libjavascriptcoregtk-4.0-dev=2.36.0-2ubuntu1 \
+            libjavascriptcoregtk-4.0-18=2.36.0-2ubuntu1 \
+            gir1.2-javascriptcoregtk-4.0=2.36.0-2ubuntu1 \
+            gir1.2-webkit2-4.0=2.36.0-2ubuntu1 \
+            build-essential curl wget file libssl-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev patchelf
+
+      - name: Install pinned Rust toolchain
+        run: |
+          rustup set auto-self-update disable
+          rustup toolchain install
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+
+      - name: Install npm dependencies
+        run: npm ci
+
+      # The bundle's hook.dll resource — the app deploys it into the Proton
+      # game folder as the dinput8 proxy, so this is the `--features proton`
+      # build, NOT the one the Windows bundle ships. It keeps the name
+      # hook.dll because that is the resource name the app resolves. There is
+      # no cargo-output mirror here because the hook crate never builds on
+      # Linux, so nothing can clobber it.
+      - name: Stage hook.dll (Proton build)
+        uses: actions/download-artifact@v4
+        with:
+          name: hook-dll-proton
+          path: src-tauri
+
+      # Same failure-attribution split as build-windows. The only signature on
+      # any artifact is the bundler's minisign on the updater tar.gz.
+      - name: Build frontend and write CI build config
+        run: |
+          npm run build
+          echo '{"build":{"beforeBuildCommand":""}}' > .tauri-release-config.json
+
+      # TAURI_TRAY=ayatana: the AppImage must link the ayatana appindicator
+      # (what modern distros actually ship). No deb: the Tauri v1 Linux
+      # updater can only replace AppImages, so a deb install would get
+      # update prompts it can never complete and then run stale — and stale
+      # versions break on game patches. AppImage is the only Linux channel.
+      - name: Build and bundle app (AppImage)
+        run: npx tauri build -b appimage,updater --config .tauri-release-config.json
+        env:
+          TAURI_PRIVATE_KEY: ${{ secrets.TAURI_PRIVATE_KEY }}
+          TAURI_KEY_PASSWORD: ${{ secrets.TAURI_KEY_PASSWORD }}
+          TAURI_TRAY: ayatana
+
+      - name: Verify the updater artifact is minisigned
+        run: |
+          shopt -s nullglob
+          tgz=(target/release/bundle/appimage/*.AppImage.tar.gz)
+          if [[ ${#tgz[@]} -ne 1 ]]; then
+            echo "::error::expected exactly 1 .AppImage.tar.gz, found ${#tgz[@]}"
+            exit 1
+          fi
+          if [[ ! -f "${tgz[0]}.sig" ]]; then
+            echo "::error::bundler did not minisign ${tgz[0]}"
+            exit 1
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-bundle
+          path: |
+            target/release/bundle/appimage/*.AppImage
+            target/release/bundle/appimage/*.AppImage.tar.gz
+            target/release/bundle/appimage/*.AppImage.tar.gz.sig
+          if-no-files-found: error
+
+  # Only runs when the dispatch asked for a release. A push to dev builds
+  # everything and stops here, leaving the bundles as run artifacts — see the
+  # header comment on why publishing is opt-in.
+  publish:
+    needs: [version, build-windows, build-linux]
+    if: needs.version.outputs.publish == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # creates the GitHub Release (and its tag)
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+      PRERELEASE: ${{ needs.version.outputs.prerelease }}
+      TARGET_SHA: ${{ needs.version.outputs.sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.version.outputs.sha }} # the version-bump commit
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      # The release body doubles as the updater prompt's patch notes: it is
+      # copied into latest.json as `notes` below. Stable versions are
+      # guaranteed a section by the version job; RCs fall back to placeholder
+      # notes. Written straight to a file — nothing here goes through step
+      # outputs, so no heredoc-delimiter dance is needed.
+      - name: Extract release notes from CHANGELOG.md
+        shell: bash
+        run: |
+          if notes="$(node scripts/extract-changelog.mjs "$VERSION")"; then
+            echo "Using the CHANGELOG.md section for $VERSION."
+          elif [[ "$PRERELEASE" == "true" ]]; then
+            notes="Release candidate $VERSION — a test build published from the dev branch. Not intended for general use."
+          else
+            exit 1
+          fi
+          {
+            echo "$notes"
+            echo ""
+            echo "Make sure to save and exit the game before updating."
+          } > notes.md
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist-assets
+          pattern: "*-bundle"
+          merge-multiple: true
+
+      # The linux artifact preserves its bundle-dir structure (appimage/);
+      # flatten so make-latest-json.mjs and the asset glob below see
+      # plain files.
+      - name: Flatten downloaded artifacts
+        run: |
+          find dist-assets -mindepth 2 -type f -exec mv -t dist-assets {} +
+          find dist-assets -mindepth 1 -type d -empty -delete
+          ls -l dist-assets
+
+      # GitHub rewrites spaces in uploaded asset names to dots, so the
+      # manifest URLs use the rewritten names (handled inside the script).
+      - name: Generate latest.json
+        run: node scripts/make-latest-json.mjs "$VERSION" notes.md dist-assets "$GITHUB_REPOSITORY"
+
+      # Published (not draft) so releases/latest/download/latest.json resolves —
+      # that manifest is the updater endpoint. `--target` creates the version tag
+      # on the version-bump commit, atomically with the release. The .sig files
+      # ride along in dist-assets/* — the updater reads signatures from
+      # latest.json, but uploading them is harmless and simpler than filtering.
+      # RCs are published with --prerelease, which GitHub excludes from
+      # releases/latest — installed apps never see them (their latest.json
+      # stays reachable via the versioned download URL, which is how an RC
+      # update flow is tested by hand).
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          extra=()
+          if [[ "$PRERELEASE" == "true" ]]; then extra+=(--prerelease); fi
+          gh release create "$VERSION" dist-assets/* \
+            --target "$TARGET_SHA" \
+            --title "Relink Logs $VERSION" \
+            --notes-file notes.md \
+            "${extra[@]}"
+
+      # The releases page lists strictly newest-first and GitHub offers no way
+      # to pin a release, so RCs pile up above the stable marked "Latest".
+      # Prune instead: after every publish, delete every prerelease entry
+      # except the one just published — an RC push leaves at most one RC above
+      # the stable, and a stable release clears them all. Only the release
+      # entries (and their assets) go; the tags stay, because next-version.mjs
+      # derives the next RC number from the tag list. Deletion failures are
+      # warnings, not errors: the release is already published, failing here
+      # would skip the promote job on stables, and the next publish re-prunes
+      # whatever was left behind anyway.
+      - name: Prune superseded prereleases
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh api "repos/$GITHUB_REPOSITORY/releases" --paginate \
+            --jq '.[] | select(.prerelease) | .tag_name' |
+          while read -r tag; do
+            if [[ "$tag" == "$VERSION" ]]; then continue; fi
+            echo "Deleting superseded prerelease $tag"
+            gh release delete "$tag" --yes || echo "::warning::could not delete prerelease $tag"
+          done
+
+
+  # After a stable release, move main to the released commit. This is a plain
+  # fast-forward push: the released commit is on dev, and main is always an
+  # ancestor of dev because this job is the ONLY thing that moves main. If the
+  # push is rejected as non-fast-forward, someone pushed to main directly —
+  # reconcile by hand (get those changes onto dev via a PR), never force-push.
+  promote:
+    needs: [version, publish]
+    if: needs.version.outputs.prerelease == 'false'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: dev
+          fetch-depth: 0
+      - name: Fast-forward main to the released commit
+        shell: bash
+        env:
+          RELEASE_DEPLOY_KEY: ${{ secrets.RELEASE_DEPLOY_KEY }}
+        run: |
+          if [[ -z "$RELEASE_DEPLOY_KEY" ]]; then
+            echo "::error::RELEASE_DEPLOY_KEY secret is missing - CI cannot fast-forward main."
+            exit 1
+          fi
+          mkdir -p "$HOME/.ssh"
+          printf '%s\n' "$RELEASE_DEPLOY_KEY" > "$HOME/.ssh/release_bot"
+          chmod 600 "$HOME/.ssh/release_bot"
+          export GIT_SSH_COMMAND="ssh -i $HOME/.ssh/release_bot -o StrictHostKeyChecking=accept-new"
+          git push "git@github.com:$GITHUB_REPOSITORY.git" "${{ needs.version.outputs.sha }}:refs/heads/main"

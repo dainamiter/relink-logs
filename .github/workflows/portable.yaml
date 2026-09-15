@@ -1,0 +1,148 @@
+name: Portable Build
+
+# Builds the portable Windows build: a plain .exe with no installer, which
+# keeps every file it writes in its own directory instead of the user profile.
+# See docs/portable.md for the layout and why it needs source changes at all.
+#
+# This workflow is separate from release.yaml on purpose. release.yaml's
+# version job pushes a version-bump commit with a deploy key and its bundle
+# step minisigns with TAURI_PRIVATE_KEY — secrets a fork does not have. This
+# one reads nothing but the repository and publishes nothing but a run
+# artifact.
+#
+# Manual dispatch (Actions -> Portable Build -> Run workflow), plus every push
+# to a branch that touches it, so a fix can be iterated on without merging.
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - "**"
+    paths:
+      - ".github/workflows/portable.yaml"
+      - "src-tauri/**"
+      - "src-hook/**"
+      - "protocol/**"
+      - "game-reader/**"
+      - "src/**"
+      - "package.json"
+      - "package-lock.json"
+      - "Cargo.toml"
+      - "Cargo.lock"
+
+jobs:
+  build-hook:
+    name: Build hook.dll
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Install pinned Rust toolchain
+        shell: bash
+        run: |
+          rustup set auto-self-update disable
+          rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+          key: portable-hook
+      # `eject` is in the release build too: it is what lets the app's "Refresh
+      # hook" replace a stale DLL without a game restart.
+      - name: Build hook.dll
+        run: cargo build --release --package hook --features eject
+      - uses: actions/upload-artifact@v4
+        with:
+          name: hook-dll
+          path: target/release/hook.dll
+          if-no-files-found: error
+
+  portable:
+    name: Build portable exe
+    needs: build-hook
+    runs-on: windows-latest
+    env:
+      # No PDBs: this job only needs the binaries, and debuginfo is a large
+      # share of Windows link time and cache size.
+      CARGO_PROFILE_RELEASE_DEBUG: "0"
+      # The name the packaged folder and the zip use.
+      APP_NAME: GBFR Logs
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - name: Install pinned Rust toolchain
+        shell: bash
+        run: |
+          rustup set auto-self-update disable
+          rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+          key: portable-app
+      - name: Install npm dependencies
+        run: npm ci
+      - name: Build frontend
+        run: npm run build
+
+      # Tests first, so a broken portable path fails here rather than in a
+      # binary nobody can debug. The hook tree is included because the hook
+      # resolves the same directory (src-hook/src/data_paths.rs).
+      #
+      # The stub is not a shortcut: build.rs only needs a hook.dll to exist to
+      # satisfy the Tauri resource glob, and tests never load the real one.
+      - name: Rust tests
+        run: |
+          New-Item -ItemType File -Force src-tauri/hook.dll | Out-Null
+          cargo test --verbose
+
+      - name: Stage hook.dll
+        uses: actions/download-artifact@v4
+        with:
+          name: hook-dll
+          path: src-tauri
+      - name: Mirror hook.dll to the cargo output path
+        shell: bash
+        # src-tauri/build.rs copies ../target/release/hook.dll over
+        # src-tauri/hook.dll during `tauri build`, so rust-cache restoring a
+        # stale DLL there would clobber the one just staged.
+        run: mkdir -p target/release && cp src-tauri/hook.dll target/release/hook.dll
+
+      - name: Write build config
+        shell: bash
+        # The frontend is already built above; leaving beforeBuildCommand in
+        # place would rebuild it and blur which step failed.
+        run: echo '{"build":{"beforeBuildCommand":""}}' > .tauri-release-config.json
+
+      # --no-bundle: no MSI and no updater artifacts — this build ships as a
+      # folder. The overlay config disables the frontend rebuild.
+      - name: Build the app
+        run: npx tauri build --no-bundle --config .tauri-release-config.json
+
+      - name: Assemble the portable folder
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $root = "portable/$env:APP_NAME"
+          New-Item -ItemType Directory -Force -Path $root | Out-Null
+          Copy-Item "target/release/gbfr-logs.exe" "$root/$env:APP_NAME.exe"
+          Copy-Item "target/release/hook.dll" "$root/hook.dll"
+          Copy-Item "src-tauri/assets" $root -Recurse
+          Copy-Item "src-tauri/lang" $root -Recurse
+          Copy-Item "docs/portable.md" "$root/README-portable.md"
+          Get-ChildItem -Recurse $root | Select-Object -ExpandProperty FullName
+          $size = (Get-ChildItem -Recurse -File $root | Measure-Object -Property Length -Sum).Sum
+          "portable folder: {0:N1} MB" -f ($size / 1MB)
+
+      - name: Smoke test the portable build
+        shell: pwsh
+        run: ./scripts/smoke-test-portable.ps1 -AppDir "portable/$env:APP_NAME"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: relink-logs-portable-windows
+          path: portable/${{ env.APP_NAME }}
+          if-no-files-found: error

@@ -1,0 +1,53 @@
+/**
+ * Structured error slugs returned by the toolbox Tauri commands
+ * (src-tauri/src/main.rs) mapped to friendly copy keys, per tool. Any error
+ * NOT in a tool's map is a free-form message meant to be shown to the user
+ * verbatim. Keep in sync with the Rust side.
+ */
+const TOOL_ERRORS = {
+  synthesis: {
+    "invalid-trait": "ui.toolbox.invalid-trait",
+    "game-not-running": "ui.toolbox.game-not-running",
+    "hook-outdated": "ui.toolbox.hook-outdated",
+    "hook-unreachable": "ui.toolbox.hook-unreachable",
+  },
+  overmastery: {
+    "game-not-running": "ui.toolbox.om-game-not-running",
+    "character-not-found": "ui.toolbox.om-character-not-found",
+    "rng-override-active": "ui.toolbox.om-rng-override-active",
+    "invalid-tier": "ui.toolbox.om-invalid-tier",
+    "slot-out-of-range": "ui.toolbox.om-slot-out-of-range",
+    "hook-outdated": "ui.toolbox.hook-outdated",
+    "hook-unreachable": "ui.toolbox.hook-unreachable",
+  },
+  transmarvel: {
+    "game-not-running": "ui.toolbox.tm-game-not-running",
+    // Same wording applies verbatim ("the game is mid-roll"), so this reuses
+    // overmastery's copy key rather than duplicating the string.
+    "rng-override-active": "ui.toolbox.om-rng-override-active",
+    "hook-outdated": "ui.toolbox.hook-outdated",
+    "hook-unreachable": "ui.toolbox.hook-unreachable",
+  },
+  hook: {
+    "game-not-running": "ui.hook-status.no-game",
+    "hook-refresh-unsupported": "ui.hook-status.refresh-unsupported",
+    "hook-refresh-in-progress": "ui.hook-status.reconnecting",
+    // Only the `#[cfg(not(windows))]` Debug-tab stubs return this literally;
+    // a real control-channel failure comes back as raw detail, unmapped.
+    "hook-control-unavailable": "ui.hook-status.control-unavailable",
+    "debug-only": "ui.hook-status.debug-only",
+  },
+} as const satisfies Record<string, Record<string, string>>;
+
+/** Friendly copy for a backend error, or the raw message when unmapped. */
+export const backendErrorMessage = (
+  t: (key: string) => string,
+  tool: keyof typeof TOOL_ERRORS,
+  error: string | null
+): string | null => {
+  if (!error) return error;
+  // Own-property check: a raw index would resolve Object.prototype members,
+  // so an error string like "toString" would hand a function to `t`.
+  const map: Record<string, string> = TOOL_ERRORS[tool];
+  return Object.hasOwn(map, error) ? t(map[error]) : error;
+};

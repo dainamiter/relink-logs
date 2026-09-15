@@ -1,0 +1,1510 @@
+{
+  "105002": {
+    "key": "TXT_QR_105002_05",
+    "text": "Lucha contra las tropas de Avia"
+  },
+  "200000": {
+    "key": "TXT_QR_200000",
+    "text": "Un lamento persistente"
+  },
+  "200001": {
+    "key": "TXT_QR_200001",
+    "text": "Salva a los crustáceos"
+  },
+  "200002": {
+    "key": "TXT_QR_200002",
+    "text": "Champiñones milagrosos"
+  },
+  "200003": {
+    "key": "TXT_QR_200003",
+    "text": "Aquí no hay quien viva"
+  },
+  "200100": {
+    "key": "TXT_QR_200100",
+    "text": "Resultados garantizados"
+  },
+  "200101": {
+    "key": "TXT_QR_200101",
+    "text": "Adoquines perfectos"
+  },
+  "200102": {
+    "key": "TXT_QR_200102",
+    "text": "Rutas infestadas"
+  },
+  "200103": {
+    "key": "TXT_QR_200103",
+    "text": "Sueños flotantes"
+  },
+  "200104": {
+    "key": "TXT_QR_200104",
+    "text": "Mucho tiempo sin reparar"
+  },
+  "200200": {
+    "key": "TXT_QR_200200",
+    "text": "Recuerdos en el hielo"
+  },
+  "200201": {
+    "key": "TXT_QR_200201",
+    "text": "Noches delicadas"
+  },
+  "200400": {
+    "key": "TXT_QR_200400",
+    "text": "Delicatesen"
+  },
+  "200401": {
+    "key": "TXT_QR_200401",
+    "text": "Material nuevo"
+  },
+  "201002": {
+    "key": "TXT_QR_201002",
+    "text": "Un curioso amuleto"
+  },
+  "201005": {
+    "key": "TXT_QR_201005",
+    "text": "Una nueva hélice"
+  },
+  "201006": {
+    "key": "TXT_QR_201006",
+    "text": "Apoyo a las tropas"
+  },
+  "201007": {
+    "key": "TXT_QR_201007",
+    "text": "Lo tengo en la punta"
+  },
+  "201102": {
+    "key": "TXT_QR_201102",
+    "text": "Aves rapaces"
+  },
+  "202002": {
+    "key": "TXT_QR_202002",
+    "text": "Investigación de campo"
+  },
+  "202005": {
+    "key": "TXT_QR_202005",
+    "text": "No me olvides"
+  },
+  "202006": {
+    "key": "TXT_QR_202006",
+    "text": "Todo con moderación"
+  },
+  "202007": {
+    "key": "TXT_QR_202007",
+    "text": "Buscando piedras divinas"
+  },
+  "202010": {
+    "key": "TXT_QR_202010",
+    "text": "Purificando a los muertos"
+  },
+  "203006": {
+    "key": "TXT_QR_203006",
+    "text": "Proteger el hogar"
+  },
+  "203007": {
+    "key": "TXT_QR_203007",
+    "text": "Excedente"
+  },
+  "203011": {
+    "key": "TXT_QR_203011",
+    "text": "Esculpiendo fuego"
+  },
+  "203111": {
+    "key": "TXT_QR_203111",
+    "text": "Esculpiendo hielo"
+  },
+  "203211": {
+    "key": "TXT_QR_203211",
+    "text": "Esculpiendo tierra"
+  },
+  "203311": {
+    "key": "TXT_QR_203311",
+    "text": "Esculpiendo viento"
+  },
+  "204005": {
+    "key": "TXT_QR_204005",
+    "text": "Echando un vistazo"
+  },
+  "204006": {
+    "key": "TXT_QR_204006",
+    "text": "Días de gloria"
+  },
+  "204007": {
+    "key": "TXT_QR_204007",
+    "text": "Somos del gremio"
+  },
+  "204011": {
+    "key": "TXT_QR_204011",
+    "text": "Bibliografía sospechosa"
+  },
+  "204012": {
+    "key": "TXT_QR_204012",
+    "text": "Una petición muy concreta"
+  },
+  "204013": {
+    "key": "TXT_QR_204013",
+    "text": "Por los caídos"
+  },
+  "204106": {
+    "key": "TXT_QR_204106",
+    "text": "Comercio del futuro"
+  },
+  "204107": {
+    "key": "TXT_QR_204107",
+    "text": "Inversión del presente"
+  },
+  "204113": {
+    "key": "TXT_QR_204113",
+    "text": "Amenaza helada"
+  },
+  "205000": {
+    "key": "TXT_QR_205000",
+    "text": "Los prodigios de Cartacielo"
+  },
+  "205001": {
+    "key": "TXT_QR_205001",
+    "text": "Notas de investigación astral"
+  },
+  "205002": {
+    "key": "TXT_QR_205002",
+    "text": "Forja tu leyenda"
+  },
+  "210220": {
+    "key": "TXT_QR_210220",
+    "text": "El licor prohibido"
+  },
+  "210221": {
+    "key": "TXT_QR_210221",
+    "text": "Interior de hielo"
+  },
+  "210223": {
+    "key": "TXT_QR_210223",
+    "text": "Giran y giran las aspas"
+  },
+  "210225": {
+    "key": "TXT_QR_210225",
+    "text": "Probando cosas nuevas"
+  },
+  "210227": {
+    "key": "TXT_QR_210227",
+    "text": "Por la familia"
+  },
+  "210228": {
+    "key": "TXT_QR_210228",
+    "text": "Lobos a las puertas"
+  },
+  "210229": {
+    "key": "TXT_QR_210229",
+    "text": "Ayuda desde lejos"
+  },
+  "210420": {
+    "key": "TXT_QR_210420",
+    "text": "Cacería de insectos"
+  },
+  "210421": {
+    "key": "TXT_QR_210421",
+    "text": "Plácidamente"
+  },
+  "210423": {
+    "key": "TXT_QR_210423",
+    "text": "Coctelería candente"
+  },
+  "210425": {
+    "key": "TXT_QR_210425",
+    "text": "No hay paraíso sin serpiente"
+  },
+  "210427": {
+    "key": "TXT_QR_210427",
+    "text": "Réquiem violento"
+  },
+  "210428": {
+    "key": "TXT_QR_210428",
+    "text": "La ira del Velo de la Espada"
+  },
+  "211021": {
+    "key": "TXT_QR_211021",
+    "text": "Ojo por ojo, diente por saurio"
+  },
+  "211023": {
+    "key": "TXT_QR_211023",
+    "text": "Seres despreciables"
+  },
+  "211025": {
+    "key": "TXT_QR_211025",
+    "text": "Ay, la espalda..."
+  },
+  "211027": {
+    "key": "TXT_QR_211027",
+    "text": "Huesos refrescantes"
+  },
+  "211030": {
+    "key": "TXT_QR_211030",
+    "text": "Magiamorfosis"
+  },
+  "211121": {
+    "key": "TXT_QR_211121",
+    "text": "Tecnología sensible"
+  },
+  "211123": {
+    "key": "TXT_QR_211123",
+    "text": "Insuflar vida"
+  },
+  "211125": {
+    "key": "TXT_QR_211125",
+    "text": "Investigación viscosa"
+  },
+  "211130": {
+    "key": "TXT_QR_211130",
+    "text": "Lección oculta"
+  },
+  "211230": {
+    "key": "TXT_QR_211230",
+    "text": "Rumbo a lo desconocido"
+  },
+  "211330": {
+    "key": "TXT_QR_211330",
+    "text": "¿Es física o química?"
+  },
+  "211430": {
+    "key": "TXT_QR_211430",
+    "text": "Dentro de lo esperado"
+  },
+  "211530": {
+    "key": "TXT_QR_211530",
+    "text": "Recuerdos memorables"
+  },
+  "212021": {
+    "key": "TXT_QR_212021",
+    "text": "El primer paso es el más duro"
+  },
+  "212024": {
+    "key": "TXT_QR_212024",
+    "text": "Romper, reducir, reciclar"
+  },
+  "212026": {
+    "key": "TXT_QR_212026",
+    "text": "Fuente de agua helada"
+  },
+  "212030": {
+    "key": "TXT_QR_212030",
+    "text": "Negocios ardientes"
+  },
+  "212031": {
+    "key": "TXT_QR_212031",
+    "text": "Sombras de pesadilla"
+  },
+  "212130": {
+    "key": "TXT_QR_212130",
+    "text": "Luces y sombras"
+  },
+  "212230": {
+    "key": "TXT_QR_212230",
+    "text": "Precaución ante todo"
+  },
+  "212330": {
+    "key": "TXT_QR_212330",
+    "text": "Madre agua"
+  },
+  "212430": {
+    "key": "TXT_QR_212430",
+    "text": "De la tierra"
+  },
+  "212530": {
+    "key": "TXT_QR_212530",
+    "text": "Colores en el viento"
+  },
+  "212630": {
+    "key": "TXT_QR_212630",
+    "text": "Su real viscosidad"
+  },
+  "213021": {
+    "key": "TXT_QR_213021",
+    "text": "Rendirse no es una opción"
+  },
+  "213022": {
+    "key": "TXT_QR_213022",
+    "text": "Tela de fuerte"
+  },
+  "213024": {
+    "key": "TXT_QR_213024",
+    "text": "Visión de tragedia"
+  },
+  "213026": {
+    "key": "TXT_QR_213026",
+    "text": "Visión de vitalidad"
+  },
+  "213032": {
+    "key": "TXT_QR_213032",
+    "text": "Visión de aislamiento"
+  },
+  "213033": {
+    "key": "TXT_QR_213033",
+    "text": "Visión de fortificación"
+  },
+  "213034": {
+    "key": "TXT_QR_213034",
+    "text": "Visión de miedo"
+  },
+  "214024": {
+    "key": "TXT_QR_214024",
+    "text": "Limpieza en la granja"
+  },
+  "214026": {
+    "key": "TXT_QR_214026",
+    "text": "Ojo para los negocios"
+  },
+  "214027": {
+    "key": "TXT_QR_214027",
+    "text": "Diseño dinámico"
+  },
+  "214030": {
+    "key": "TXT_QR_214030",
+    "text": "En el resplandor del fuego"
+  },
+  "214033": {
+    "key": "TXT_QR_214033",
+    "text": "Símbolo de las hordas"
+  },
+  "214034": {
+    "key": "TXT_QR_214034",
+    "text": "Lamentos y pesares"
+  },
+  "214035": {
+    "key": "TXT_QR_214035",
+    "text": "En defensa de la ciudad"
+  },
+  "214130": {
+    "key": "TXT_QR_214130",
+    "text": "Y se hizo la luz"
+  },
+  "214135": {
+    "key": "TXT_QR_214135",
+    "text": "Artes olvidadas"
+  },
+  "214230": {
+    "key": "TXT_QR_214230",
+    "text": "El vacío allende"
+  },
+  "214330": {
+    "key": "TXT_QR_214330",
+    "text": "Cero más que absoluto"
+  },
+  "214430": {
+    "key": "TXT_QR_214430",
+    "text": "Fruto de la tierra"
+  },
+  "214530": {
+    "key": "TXT_QR_214530",
+    "text": "Vientos de cambio"
+  },
+  "214630": {
+    "key": "TXT_QR_214630",
+    "text": "De viscosín a viscosín"
+  },
+  "220001": {
+    "key": "TXT_QR_220001",
+    "text": "Resurgir de las deidades"
+  },
+  "220002": {
+    "key": "TXT_QR_220002",
+    "text": "Unos misteriosos resplandores"
+  },
+  "220003": {
+    "key": "TXT_QR_220003",
+    "text": "Gemas de Aquila"
+  },
+  "220004": {
+    "key": "TXT_QR_220004",
+    "text": "Auge diabólico"
+  },
+  "220005": {
+    "key": "TXT_QR_220005",
+    "text": "Hacia la sima de Céfira"
+  },
+  "220101": {
+    "key": "TXT_QR_220101",
+    "text": "Investigando la brecha misteriosa"
+  },
+  "220102": {
+    "key": "TXT_QR_220102",
+    "text": "De vuelta a la brecha misteriosa"
+  },
+  "220111": {
+    "key": "TXT_QR_220111",
+    "text": "Rumor plateado"
+  },
+  "220112": {
+    "key": "TXT_QR_220112",
+    "text": "Rumor dorado"
+  },
+  "220301": {
+    "key": "TXT_QR_220301",
+    "text": "Otra oportunidad de despertar"
+  },
+  "220302": {
+    "key": "TXT_QR_220302",
+    "text": "Los sentimientos del despertar"
+  },
+  "220303": {
+    "key": "TXT_QR_220303",
+    "text": "Despertar para ver el mañana"
+  },
+  "220311": {
+    "key": "TXT_QR_220311",
+    "text": "Se me han protoadelantado"
+  },
+  "220312": {
+    "key": "TXT_QR_220312",
+    "text": "Protobocazas"
+  },
+  "220313": {
+    "key": "TXT_QR_220313",
+    "text": "Posibilidades más allá de proto"
+  },
+  "220401": {
+    "key": "TXT_QR_220401",
+    "text": "Producto de la brecha misteriosa"
+  },
+  "220411": {
+    "key": "TXT_QR_220411",
+    "text": "Que rulen los premios"
+  },
+  "230001": {
+    "key": "TXT_QR_230001",
+    "text": "Prueba cinabrio y viridián"
+  },
+  "230002": {
+    "key": "TXT_QR_230002",
+    "text": "Prueba cerúlea y dorada"
+  },
+  "230003": {
+    "key": "TXT_QR_230003",
+    "text": "Prueba alba y azabache"
+  },
+  "230004": {
+    "key": "TXT_QR_230004",
+    "text": "Mazurca de batalla"
+  },
+  "230301": {
+    "key": "TXT_QR_230301",
+    "text": "Uno: nuevo despertar"
+  },
+  "230302": {
+    "key": "TXT_QR_230302",
+    "text": "Dos: despertar adicional"
+  },
+  "230303": {
+    "key": "TXT_QR_230303",
+    "text": "Tres: despertar definitivo"
+  },
+  "230311": {
+    "key": "TXT_QR_230311",
+    "text": "Uno: protodistancia"
+  },
+  "230312": {
+    "key": "TXT_QR_230312",
+    "text": "Dos: protointelección"
+  },
+  "230313": {
+    "key": "TXT_QR_230313",
+    "text": "Tres: protoconsecución"
+  },
+  "230321": {
+    "key": "TXT_QR_230321",
+    "text": "Cuenta atrás para trascender"
+  },
+  "230391": {
+    "key": "TXT_QR_230391",
+    "text": "Más allá del límite"
+  },
+  "230401": {
+    "key": "TXT_QR_230401",
+    "text": "Mineral prometedor"
+  },
+  "230402": {
+    "key": "TXT_QR_230402",
+    "text": "Vesania del pez gigantesco"
+  },
+  "230411": {
+    "key": "TXT_QR_230411",
+    "text": "Más vale prevenir que resucitar"
+  },
+  "240121": {
+    "key": "TXT_QR_240121",
+    "text": "Tras las tres estrellas rojas"
+  },
+  "290002": {
+    "key": "TXT_QR_290002",
+    "text": "Salva a los crustáceos\u00A0II"
+  },
+  "290003": {
+    "key": "TXT_QR_290003",
+    "text": "Salva a los crustáceos\u00A0III"
+  },
+  "290004": {
+    "key": "TXT_QR_290004",
+    "text": "Salva a los crustáceos\u00A0IV"
+  },
+  "290005": {
+    "key": "TXT_QR_290005",
+    "text": "Salva a los crustáceos\u00A0V"
+  },
+  "290006": {
+    "key": "TXT_QR_290006",
+    "text": "Salva a los crustáceos\u00A0VI"
+  },
+  "290007": {
+    "key": "TXT_QR_290007",
+    "text": "Salva a los crustáceos\u00A0VII"
+  },
+  "290008": {
+    "key": "TXT_QR_290008",
+    "text": "Salva a los crustáceos\u00A0VIII"
+  },
+  "290009": {
+    "key": "TXT_QR_290009",
+    "text": "Salva a los crustáceos\u00A0IX"
+  },
+  "290010": {
+    "key": "TXT_QR_290010",
+    "text": "Salva a los crustáceos\u00A0X"
+  },
+  "290011": {
+    "key": "TXT_QR_290011",
+    "text": "Salva a los crustáceos\u00A0XI"
+  },
+  "290012": {
+    "key": "TXT_QR_290012",
+    "text": "Salva a los crustáceos\u00A0XII"
+  },
+  "290013": {
+    "key": "TXT_QR_290013",
+    "text": "Salva a los crustáceos\u00A0XIII"
+  },
+  "290014": {
+    "key": "TXT_QR_290014",
+    "text": "Salva a los crustáceos\u00A0XIV"
+  },
+  "290015": {
+    "key": "TXT_QR_290015",
+    "text": "Salva a los crustáceos (final)"
+  },
+  "290101": {
+    "key": "TXT_QR_290101",
+    "text": "¡Milagro! Hay cangrejos azabaches"
+  },
+  "290102": {
+    "key": "TXT_QR_290102",
+    "text": "¡Reto! Tras los cangrejos"
+  },
+  "290103": {
+    "key": "TXT_QR_290103",
+    "text": "¡Tiembla! Cangrejos peculiares"
+  },
+  "290104": {
+    "key": "TXT_QR_290104",
+    "text": "¡Sorpresa! Cangrejos avistados"
+  },
+  "290105": {
+    "key": "TXT_QR_290105",
+    "text": "¡Fin! Vivan los cangrejos"
+  },
+  "300000": {
+    "key": "TXT_QR_300000",
+    "text": "Puedes contar conmigo"
+  },
+  "300002": {
+    "key": "TXT_QR_300002",
+    "text": "La familia lo es todo"
+  },
+  "300003": {
+    "key": "TXT_QR_300003",
+    "text": "Tocado, pero no hundido"
+  },
+  "300004": {
+    "key": "TXT_QR_300004",
+    "text": "No es más que una fase"
+  },
+  "300005": {
+    "key": "TXT_QR_300005",
+    "text": "Palabras nunca dichas"
+  },
+  "300006": {
+    "key": "TXT_QR_300006",
+    "text": "Invitados no deseados"
+  },
+  "300007": {
+    "key": "TXT_QR_300007",
+    "text": "Vínculos cálidos"
+  },
+  "300008": {
+    "key": "TXT_QR_300008",
+    "text": "Ludwin y Hans"
+  },
+  "300009": {
+    "key": "TXT_QR_300009",
+    "text": "Vane, el escudero"
+  },
+  "300010": {
+    "key": "TXT_QR_300010",
+    "text": "Un pequeño cambio"
+  },
+  "300011": {
+    "key": "TXT_QR_300011",
+    "text": "Ejércitos armados de Semitia"
+  },
+  "300012": {
+    "key": "TXT_QR_300012",
+    "text": "El noble deshonesto"
+  },
+  "300013": {
+    "key": "TXT_QR_300013",
+    "text": "Pesca acalorada"
+  },
+  "300014": {
+    "key": "TXT_QR_300014",
+    "text": "El camino elegido por Narmaya"
+  },
+  "300015": {
+    "key": "TXT_QR_300015",
+    "text": "Un ejército de un solo hombre"
+  },
+  "300016": {
+    "key": "TXT_QR_300016",
+    "text": "Un regalo modesto"
+  },
+  "300017": {
+    "key": "TXT_QR_300017",
+    "text": "La mujer enamorada de la muerte"
+  },
+  "300018": {
+    "key": "TXT_QR_300018",
+    "text": "El pesar de una artista"
+  },
+  "300019": {
+    "key": "TXT_QR_300019",
+    "text": "Enfrentado al pasado"
+  },
+  "300021": {
+    "key": "TXT_QR_300021",
+    "text": "Viento"
+  },
+  "300022": {
+    "key": "TXT_QR_300022",
+    "text": "Bomba de relojería"
+  },
+  "300023": {
+    "key": "TXT_QR_300023",
+    "text": "Dragón con piel de cordero"
+  },
+  "300024": {
+    "key": "TXT_QR_300024",
+    "text": "Elegía de los lobos"
+  },
+  "300025": {
+    "key": "TXT_QR_300025",
+    "text": "Cuidado con las mentiras"
+  },
+  "300026": {
+    "key": "TXT_QR_300026",
+    "text": "Detective solitaria"
+  },
+  "300027": {
+    "key": "TXT_QR_300027",
+    "text": "Infiltración"
+  },
+  "300028": {
+    "key": "TXT_QR_300028",
+    "text": "Nota desafinada"
+  },
+  "300029": {
+    "key": "TXT_QR_300029",
+    "text": "Legado de otrora"
+  },
+  "301000": {
+    "key": "TXT_QR_301000",
+    "text": "A prueba"
+  },
+  "301002": {
+    "key": "TXT_QR_301002",
+    "text": "Huevos de alaspectro"
+  },
+  "301003": {
+    "key": "TXT_QR_301003",
+    "text": "Prepárate y vuela alto"
+  },
+  "301004": {
+    "key": "TXT_QR_301004",
+    "text": "Cambio de opinión"
+  },
+  "301005": {
+    "key": "TXT_QR_301005",
+    "text": "Mientras estemos vivos"
+  },
+  "301006": {
+    "key": "TXT_QR_301006",
+    "text": "Cristal de fortificación"
+  },
+  "301007": {
+    "key": "TXT_QR_301007",
+    "text": "En busca de la felicidad"
+  },
+  "301008": {
+    "key": "TXT_QR_301008",
+    "text": "Aprendiendo juntos"
+  },
+  "301009": {
+    "key": "TXT_QR_301009",
+    "text": "Caballero perdido"
+  },
+  "301010": {
+    "key": "TXT_QR_301010",
+    "text": "La mayor prueba del Cuerpo"
+  },
+  "301011": {
+    "key": "TXT_QR_301011",
+    "text": "Una ayudita entre las sombras"
+  },
+  "301012": {
+    "key": "TXT_QR_301012",
+    "text": "La trampa de Consomé"
+  },
+  "301013": {
+    "key": "TXT_QR_301013",
+    "text": "Hora de la votación"
+  },
+  "301014": {
+    "key": "TXT_QR_301014",
+    "text": "Un bien mayor"
+  },
+  "301015": {
+    "key": "TXT_QR_301015",
+    "text": "Un duelo para la eternidad"
+  },
+  "301016": {
+    "key": "TXT_QR_301016",
+    "text": "Ébano y carmesí"
+  },
+  "301017": {
+    "key": "TXT_QR_301017",
+    "text": "Vestigios"
+  },
+  "301018": {
+    "key": "TXT_QR_301018",
+    "text": "Una riña fraternal"
+  },
+  "301019": {
+    "key": "TXT_QR_301019",
+    "text": "El día del juicio final"
+  },
+  "301021": {
+    "key": "TXT_QR_301021",
+    "text": "Ilusión"
+  },
+  "301022": {
+    "key": "TXT_QR_301022",
+    "text": "Ejecución piadosa"
+  },
+  "301023": {
+    "key": "TXT_QR_301023",
+    "text": "Duelo de titanes"
+  },
+  "301024": {
+    "key": "TXT_QR_301024",
+    "text": "Toda la carne en el asador"
+  },
+  "301025": {
+    "key": "TXT_QR_301025",
+    "text": "Venganza entre adversidades"
+  },
+  "301026": {
+    "key": "TXT_QR_301026",
+    "text": "Enfrentamiento contra el Velo"
+  },
+  "301027": {
+    "key": "TXT_QR_301027",
+    "text": "Relámpago verdadero"
+  },
+  "301028": {
+    "key": "TXT_QR_301028",
+    "text": "Mundo ideal"
+  },
+  "301029": {
+    "key": "TXT_QR_301029",
+    "text": "Mensaje para el futuro"
+  },
+  "401301": {
+    "key": "TXT_QR_401301",
+    "text": "Por los cielos"
+  },
+  "401303": {
+    "key": "TXT_QR_401303",
+    "text": "¿Está bien mi papá?"
+  },
+  "401305": {
+    "key": "TXT_QR_401305",
+    "text": "Fumigación en el fuerte"
+  },
+  "401306": {
+    "key": "TXT_QR_401306",
+    "text": "A por el... Uf... trasgo jefe"
+  },
+  "401310": {
+    "key": "TXT_QR_401310",
+    "text": "Aplasta a las hordas de trasgos"
+  },
+  "401311": {
+    "key": "TXT_QR_401311",
+    "text": "Protege nuestro hogar"
+  },
+  "401315": {
+    "key": "TXT_QR_401315",
+    "text": "Protege nuestro valle"
+  },
+  "401316": {
+    "key": "TXT_QR_401316",
+    "text": "Plegarias por un mañana"
+  },
+  "401317": {
+    "key": "TXT_QR_401317",
+    "text": "Aplasta a las hordas de trasgos"
+  },
+  "401318": {
+    "key": "TXT_QR_401318",
+    "text": "¿Está bien mi papá?"
+  },
+  "402301": {
+    "key": "TXT_QR_402301",
+    "text": "Gorila ha metido la gamba"
+  },
+  "402302": {
+    "key": "TXT_QR_402302",
+    "text": "Golemología I: gólems desérticos"
+  },
+  "402304": {
+    "key": "TXT_QR_402304",
+    "text": "En la vanguardia"
+  },
+  "402306": {
+    "key": "TXT_QR_402306",
+    "text": "Veo una visión sangrienta"
+  },
+  "402308": {
+    "key": "TXT_QR_402308",
+    "text": "Orden en el volcán"
+  },
+  "402309": {
+    "key": "TXT_QR_402309",
+    "text": "La saga continúa: Fuego"
+  },
+  "402310": {
+    "key": "TXT_QR_402310",
+    "text": "Daga ha metido la gamba"
+  },
+  "402312": {
+    "key": "TXT_QR_402312",
+    "text": "La saga continúa: Hielo"
+  },
+  "402313": {
+    "key": "TXT_QR_402313",
+    "text": "Saga grande: Érase una vez"
+  },
+  "402314": {
+    "key": "TXT_QR_402314",
+    "text": "La letra con sangre entra"
+  },
+  "402315": {
+    "key": "TXT_QR_402315",
+    "text": "Problemas de visión"
+  },
+  "402316": {
+    "key": "TXT_QR_402316",
+    "text": "Solo tú puedes proteger el bosque"
+  },
+  "402317": {
+    "key": "TXT_QR_402317",
+    "text": "Golemología I: gólems desérticos"
+  },
+  "403201": {
+    "key": "TXT_QR_403201",
+    "text": "Cacho hombros"
+  },
+  "403202": {
+    "key": "TXT_QR_403202",
+    "text": "Entre fogones"
+  },
+  "403301": {
+    "key": "TXT_QR_403301",
+    "text": "Surcar los cielos"
+  },
+  "403302": {
+    "key": "TXT_QR_403302",
+    "text": "El sabor de la envidia"
+  },
+  "403303": {
+    "key": "TXT_QR_403303",
+    "text": "Diezmando las tropas"
+  },
+  "403307": {
+    "key": "TXT_QR_403307",
+    "text": "Buena reputación"
+  },
+  "403308": {
+    "key": "TXT_QR_403308",
+    "text": "Ávido coleccionista"
+  },
+  "403309": {
+    "key": "TXT_QR_403309",
+    "text": "El ojo que todo lo ve"
+  },
+  "403311": {
+    "key": "TXT_QR_403311",
+    "text": "Veo una visión ardiente"
+  },
+  "403312": {
+    "key": "TXT_QR_403312",
+    "text": "Muslitos de grifo al ajillo"
+  },
+  "403313": {
+    "key": "TXT_QR_403313",
+    "text": "Alas de la antigüedad"
+  },
+  "404101": {
+    "key": "TXT_QR_404101",
+    "text": "Alas de la antigüedad"
+  },
+  "404204": {
+    "key": "TXT_QR_404204",
+    "text": "Contingencia oscura"
+  },
+  "404309": {
+    "key": "TXT_QR_404309",
+    "text": "A nadie le gustan los restos"
+  },
+  "404310": {
+    "key": "TXT_QR_404310",
+    "text": "Veo una visión letal"
+  },
+  "404311": {
+    "key": "TXT_QR_404311",
+    "text": "La próxima tendencia"
+  },
+  "404313": {
+    "key": "TXT_QR_404313",
+    "text": "Golemología II: gólems volcánicos"
+  },
+  "404315": {
+    "key": "TXT_QR_404315",
+    "text": "El germen del problema"
+  },
+  "404316": {
+    "key": "TXT_QR_404316",
+    "text": "Un hueso duro de roer"
+  },
+  "404317": {
+    "key": "TXT_QR_404317",
+    "text": "¡Prohibido el paso!"
+  },
+  "405101": {
+    "key": "TXT_QR_405101",
+    "text": "Licencia para impresionar"
+  },
+  "405201": {
+    "key": "TXT_QR_405201",
+    "text": "Saga ilustrada: Comienzo"
+  },
+  "405202": {
+    "key": "TXT_QR_405202",
+    "text": "Aprendiendo del pasado"
+  },
+  "405203": {
+    "key": "TXT_QR_405203",
+    "text": "Saga ilustrada: Infierno"
+  },
+  "405205": {
+    "key": "TXT_QR_405205",
+    "text": "Conocer lo desconocido"
+  },
+  "405206": {
+    "key": "TXT_QR_405206",
+    "text": "Investigación general: Gallanza"
+  },
+  "405207": {
+    "key": "TXT_QR_405207",
+    "text": "Investigación general: Maglielle"
+  },
+  "405208": {
+    "key": "TXT_QR_405208",
+    "text": "Investigación general: Iz"
+  },
+  "405302": {
+    "key": "TXT_QR_405302",
+    "text": "Alas de la conflagración"
+  },
+  "405303": {
+    "key": "TXT_QR_405303",
+    "text": "Alas sísmicas"
+  },
+  "405304": {
+    "key": "TXT_QR_405304",
+    "text": "Alas de la tormenta"
+  },
+  "405305": {
+    "key": "TXT_QR_405305",
+    "text": "Alas de la escarcha"
+  },
+  "405308": {
+    "key": "TXT_QR_405308",
+    "text": "No podemos hacer la vista gorda"
+  },
+  "405309": {
+    "key": "TXT_QR_405309",
+    "text": "¡Formación de asalto!"
+  },
+  "405310": {
+    "key": "TXT_QR_405310",
+    "text": "No se juega con fuego"
+  },
+  "405311": {
+    "key": "TXT_QR_405311",
+    "text": "Más tierras sagradas"
+  },
+  "406101": {
+    "key": "TXT_QR_406101",
+    "text": "Vuelta a la tierra predestinada"
+  },
+  "406323": {
+    "key": "TXT_QR_406323",
+    "text": "Veo una visión cromática"
+  },
+  "406324": {
+    "key": "TXT_QR_406324",
+    "text": "La venganza de las hordas"
+  },
+  "406325": {
+    "key": "TXT_QR_406325",
+    "text": "Me mina la moral"
+  },
+  "406327": {
+    "key": "TXT_QR_406327",
+    "text": "Por la sacra tierra"
+  },
+  "406330": {
+    "key": "TXT_QR_406330",
+    "text": "La saga continúa: Tierra"
+  },
+  "406331": {
+    "key": "TXT_QR_406331",
+    "text": "La saga continúa: Viento"
+  },
+  "406332": {
+    "key": "TXT_QR_406332",
+    "text": "Saga ilustrada: Cristal"
+  },
+  "406333": {
+    "key": "TXT_QR_406333",
+    "text": "Saga ilustrada: Averno"
+  },
+  "406334": {
+    "key": "TXT_QR_406334",
+    "text": "La saga continúa: Plata"
+  },
+  "406335": {
+    "key": "TXT_QR_406335",
+    "text": "Saga ilustrada: Velo"
+  },
+  "406337": {
+    "key": "TXT_QR_406337",
+    "text": "El bis de Iz"
+  },
+  "406338": {
+    "key": "TXT_QR_406338",
+    "text": "Saga grande: Y comieron perdices"
+  },
+  "406351": {
+    "key": "TXT_QR_406351",
+    "text": "Reposo y reinado"
+  },
+  "406352": {
+    "key": "TXT_QR_406352",
+    "text": "Petición del jefe"
+  },
+  "406353": {
+    "key": "TXT_QR_406353",
+    "text": "Conoce al enemigo"
+  },
+  "406354": {
+    "key": "TXT_QR_406354",
+    "text": "Calma en las alturas"
+  },
+  "406355": {
+    "key": "TXT_QR_406355",
+    "text": "Golemología III: gólems forestales"
+  },
+  "406356": {
+    "key": "TXT_QR_406356",
+    "text": "Nueva variante"
+  },
+  "406357": {
+    "key": "TXT_QR_406357",
+    "text": "Muerte, impuestos y trasgos"
+  },
+  "406358": {
+    "key": "TXT_QR_406358",
+    "text": "Con la mirada puesta en el santuario"
+  },
+  "406359": {
+    "key": "TXT_QR_406359",
+    "text": "Temblor en el desierto"
+  },
+  "406360": {
+    "key": "TXT_QR_406360",
+    "text": "Veo una visión lúgubre"
+  },
+  "406361": {
+    "key": "TXT_QR_406361",
+    "text": "Enciclopedia viscosa"
+  },
+  "406364": {
+    "key": "TXT_QR_406364",
+    "text": "A otro herrero con ese hueso"
+  },
+  "406365": {
+    "key": "TXT_QR_406365",
+    "text": "La defensa es un plato que se sirve frío"
+  },
+  "406366": {
+    "key": "TXT_QR_406366",
+    "text": "Una rivalidad acalorada"
+  },
+  "407101": {
+    "key": "TXT_QR_407101",
+    "text": "El último informe"
+  },
+  "407301": {
+    "key": "TXT_QR_407301",
+    "text": "Un reto ardiente"
+  },
+  "407302": {
+    "key": "TXT_QR_407302",
+    "text": "Un reto con los pies en la tierra"
+  },
+  "407303": {
+    "key": "TXT_QR_407303",
+    "text": "Un reto tormentoso"
+  },
+  "407304": {
+    "key": "TXT_QR_407304",
+    "text": "Un reto gélido"
+  },
+  "407305": {
+    "key": "TXT_QR_407305",
+    "text": "Las peores vacaciones del mundo"
+  },
+  "407306": {
+    "key": "TXT_QR_407306",
+    "text": "Obstáculos comerciales"
+  },
+  "407307": {
+    "key": "TXT_QR_407307",
+    "text": "Un crisol de animosidad"
+  },
+  "407308": {
+    "key": "TXT_QR_407308",
+    "text": "Banquete de hielo y cadáveres"
+  },
+  "407309": {
+    "key": "TXT_QR_407309",
+    "text": "Por una Folca más libre"
+  },
+  "407310": {
+    "key": "TXT_QR_407310",
+    "text": "Canción de tierra y fuego"
+  },
+  "407311": {
+    "key": "TXT_QR_407311",
+    "text": "Canción de hielo y tormenta"
+  },
+  "407312": {
+    "key": "TXT_QR_407312",
+    "text": "El Lobo y el Velo"
+  },
+  "407313": {
+    "key": "TXT_QR_407313",
+    "text": "Calamidad personificada"
+  },
+  "407314": {
+    "key": "TXT_QR_407314",
+    "text": "La ferocidad del Lobo Plateado"
+  },
+  "407315": {
+    "key": "TXT_QR_407315",
+    "text": "Recuerdos de fuego"
+  },
+  "407316": {
+    "key": "TXT_QR_407316",
+    "text": "Rayos y relámpagos"
+  },
+  "407317": {
+    "key": "TXT_QR_407317",
+    "text": "Al abismo"
+  },
+  "407318": {
+    "key": "TXT_QR_407318",
+    "text": "La historia de la ira de Bahamut"
+  },
+  "407319": {
+    "key": "TXT_QR_407319",
+    "text": "El dios autómata ataca de nuevo"
+  },
+  "407320": {
+    "key": "TXT_QR_407320",
+    "text": "La última visión"
+  },
+  "407321": {
+    "key": "TXT_QR_407321",
+    "text": "Cero"
+  },
+  "407322": {
+    "key": "TXT_QR_407322",
+    "text": "Enfrentamiento"
+  },
+  "407323": {
+    "key": "TXT_QR_407323",
+    "text": "La pesadilla del espadachín oscuro"
+  },
+  "407324": {
+    "key": "TXT_QR_407324",
+    "text": "Espectáculo de fuerza y magia"
+  },
+  "407325": {
+    "key": "TXT_QR_407325",
+    "text": "Los \"voluntarios\" de Zathba"
+  },
+  "408301": {
+    "key": "TXT_QR_408301",
+    "text": "Enfrentamiento boreal"
+  },
+  "408302": {
+    "key": "TXT_QR_408302",
+    "text": "Festín crustáceo"
+  },
+  "408305": {
+    "key": "TXT_QR_408305",
+    "text": "Pajarraco"
+  },
+  "408306": {
+    "key": "TXT_QR_408306",
+    "text": "Eco metálico"
+  },
+  "408308": {
+    "key": "TXT_QR_408308",
+    "text": "Valle de las pesadillas"
+  },
+  "408310": {
+    "key": "TXT_QR_408310",
+    "text": "Belicosos hasta la médula"
+  },
+  "408311": {
+    "key": "TXT_QR_408311",
+    "text": "Espiritismo"
+  },
+  "408312": {
+    "key": "TXT_QR_408312",
+    "text": "Tártaro salvaje"
+  },
+  "408313": {
+    "key": "TXT_QR_408313",
+    "text": "Fulgor de una lanza"
+  },
+  "408314": {
+    "key": "TXT_QR_408314",
+    "text": "Enajenación de los peregrinos"
+  },
+  "408315": {
+    "key": "TXT_QR_408315",
+    "text": "Mil espadas"
+  },
+  "409302": {
+    "key": "TXT_QR_409302",
+    "text": "Bestia terrestre"
+  },
+  "409303": {
+    "key": "TXT_QR_409303",
+    "text": "Purgatorio"
+  },
+  "409305": {
+    "key": "TXT_QR_409305",
+    "text": "Bestia gélida"
+  },
+  "409307": {
+    "key": "TXT_QR_409307",
+    "text": "Desolación cerúlea y dorada"
+  },
+  "409308": {
+    "key": "TXT_QR_409308",
+    "text": "Procesión monstruosa"
+  },
+  "409309": {
+    "key": "TXT_QR_409309",
+    "text": "Resplandor llameante de Céfira"
+  },
+  "409311": {
+    "key": "TXT_QR_409311",
+    "text": "Inquina viscosa"
+  },
+  "409312": {
+    "key": "TXT_QR_409312",
+    "text": "Amenaza cinabrio y viridián"
+  },
+  "409313": {
+    "key": "TXT_QR_409313",
+    "text": "Bestia ardiente"
+  },
+  "409314": {
+    "key": "TXT_QR_409314",
+    "text": "Posible aislamiento"
+  },
+  "409315": {
+    "key": "TXT_QR_409315",
+    "text": "Desdicha dragontina"
+  },
+  "409317": {
+    "key": "TXT_QR_409317",
+    "text": "Posible vitalidad"
+  },
+  "409319": {
+    "key": "TXT_QR_409319",
+    "text": "Posible miedo"
+  },
+  "409320": {
+    "key": "TXT_QR_409320",
+    "text": "Brillo de Céfira en la lejanía"
+  },
+  "40a301": {
+    "key": "TXT_QR_40A301",
+    "text": "Nuevo orden mundial"
+  },
+  "40a302": {
+    "key": "TXT_QR_40A302",
+    "text": "Supervivencia del más apto"
+  },
+  "40a303": {
+    "key": "TXT_QR_40A303",
+    "text": "Hoja del ocaso"
+  },
+  "40a304": {
+    "key": "TXT_QR_40A304",
+    "text": "Almas errantes"
+  },
+  "40a305": {
+    "key": "TXT_QR_40A305",
+    "text": "Trueno prístino"
+  },
+  "40a306": {
+    "key": "TXT_QR_40A306",
+    "text": "Llama azabache"
+  },
+  "40a307": {
+    "key": "TXT_QR_40A307",
+    "text": "Lucha por el manjar volcánico"
+  },
+  "40a308": {
+    "key": "TXT_QR_40A308",
+    "text": "Sopla bóreas de nuevo"
+  },
+  "40a309": {
+    "key": "TXT_QR_40A309",
+    "text": "Ocaso púrpura"
+  },
+  "40a310": {
+    "key": "TXT_QR_40A310",
+    "text": "Mezcla pétrea"
+  },
+  "40a311": {
+    "key": "TXT_QR_40A311",
+    "text": "Luz lunar"
+  },
+  "40a312": {
+    "key": "TXT_QR_40A312",
+    "text": "Mazurca de batalla"
+  },
+  "40a313": {
+    "key": "TXT_QR_40A313",
+    "text": "Deseo un lucero del alba eterno"
+  },
+  "40a314": {
+    "key": "TXT_QR_40A314",
+    "text": "El ser absoluto"
+  },
+  "40a316": {
+    "key": "TXT_QR_40A316",
+    "text": "Cielo inolvidable"
+  },
+  "40a320": {
+    "key": "TXT_QR_40A320",
+    "text": "Expansión del rugido dragontino"
+  },
+  "40a321": {
+    "key": "TXT_QR_40A321",
+    "text": "Furia sagrada en el campo de batalla"
+  },
+  "40a322": {
+    "key": "TXT_QR_40A322",
+    "text": "Verificando leyendas"
+  },
+  "40a323": {
+    "key": "TXT_QR_40A323",
+    "text": "Némesis demoniacos"
+  },
+  "40a324": {
+    "key": "TXT_QR_40A324",
+    "text": "Vitalidad oscilante"
+  },
+  "40a325": {
+    "key": "TXT_QR_40A325",
+    "text": "Aislamiento vindicador"
+  },
+  "40a326": {
+    "key": "TXT_QR_40A326",
+    "text": "Leyenda de las draconitas"
+  },
+  "40a327": {
+    "key": "TXT_QR_40A327",
+    "text": "Entusiasmo por creaciones de otrora"
+  },
+  "40a328": {
+    "key": "TXT_QR_40A328",
+    "text": "Dios autómata descontrolado"
+  },
+  "40a329": {
+    "key": "TXT_QR_40A329",
+    "text": "Impulso primigenio"
+  },
+  "40a330": {
+    "key": "TXT_QR_40A330",
+    "text": "Orgullo de las estrellas boreales"
+  },
+  "40b301": {
+    "key": "TXT_QR_40B301",
+    "text": "Sumidad del mundo"
+  },
+  "40b309": {
+    "key": "TXT_QR_40B309",
+    "text": "Sumidad de la oscuridad"
+  },
+  "40b313": {
+    "key": "TXT_QR_40B313",
+    "text": "Sumidad del apocalipsis"
+  },
+  "40b314": {
+    "key": "TXT_QR_40B314",
+    "text": "Sumidad del caos"
+  },
+  "40b316": {
+    "key": "TXT_QR_40B316",
+    "text": "Sumidad de la esencia suprema"
+  },
+  "4fe500": {
+    "key": "TXT_QR_4FE500",
+    "text": "A por el... Uf... trasgo jefe"
+  }
+}

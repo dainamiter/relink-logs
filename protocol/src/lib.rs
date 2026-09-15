@@ -1,0 +1,1277 @@
+/*!
+This library crate provides the event protocol that is emitted by the "hook"
+injected into the game process and consumed by the Relink Logs parser.
+
+Keep in mind that the serialization protocol is not defined here, only the
+serializable message types.
+
+The protocol between the hook and the parser is a byte stream — a named pipe on native Windows,
+localhost TCP when the hook detects it is running under Wine/Proton (see TCP_ADDR) — carrying
+"bincode"-serialized messages. This means that the hook and
+the parser must be compiled together to ensure that the serialization format is
+the same.
+
+The parser saves these messages in a different serialization format — CBOR, which
+unlike bincode keys every struct field by NAME — so that old logs can still be read
+by newer versions of the parser.
+
+Because of this, any change to a message type must keep logs already on disk
+readable, and bincode will not warn you: it is positional, and the hook and parser
+ship together, so a change that round-trips fine on the wire can still make every
+stored log unloadable. Concretely:
+
+- A new `Option<T>` field is already safe: serde's missing-field path tries
+  `deserialize_option` first, so a key that is absent from an older log reads
+  back as `None` with no attribute needed.
+- A new field of any other type needs `#[serde(default)]`. Without it, every log
+  written before the field existed fails to load outright — that is what
+  `critical_rate: f32` did to 151 stored logs on 2026-07-24.
+- A new message variant costs nothing on disk (old logs never contain it), but
+  must still be APPENDED: bincode encodes the variant by index, so inserting one
+  mid-enum silently reassigns every later variant for any hook/app pair that did
+  not compile together (a stale `hook-dbg.dll` is the usual way that happens).
+- RENAMING a field is never compatible, because the old key is what is on disk,
+  and the two field kinds fail differently: a plain field errors out, while an
+  `Option` one silently reads `None` — data loss with no complaint. Give the new
+  name `#[serde(default)]`, plus `#[serde(alias = "<old key>")]` if the old value
+  is worth keeping. If the TYPE changed too, an alias alone is not enough —
+  cbor4ii dispatches on the stored value's own type and rejects a mismatch — so
+  recovery needs a hand-written `visit_seq`/`visit_map` impl serving the CBOR and
+  bincode paths differently. Usually not worth it.
+
+`src-tauri/src/parser/v1/mod.rs` owns the stored-format half of this contract; its
+`stored_log_compat` tests pin the shapes real logs were written with, and
+`cargo run -p gbfr-logs --example log_compat -- <logs.db>` sweeps a real database.
+
+The `toolbox` module carries the second channel: request/response RPC served
+by the hook (snapshots for the Toolbox tools). It shares the compiled-together
+rule but never touches the parser's on-disk format.
+
+The `control` module carries a third, dev-only channel: hook-lifecycle
+commands (currently just `Eject`) served by the hook's `eject` feature and
+called by debug app builds. Separate from `toolbox` so a lifecycle command is
+never mixed into the tool RPC. Release builds never use it.
+*/
+
+use core::fmt;
+use std::{
+    ffi::CString,
+    fmt::{Display, Formatter},
+};
+
+pub use bincode;
+
+pub mod control;
+pub mod fingerprint;
+pub mod toolbox;
+
+// `WIRE_FINGERPRINT`, written by `build.rs` as a `u32` literal with its doc
+// comment. Its value is pinned end-to-end by
+// `fingerprint::tests::shipped_wire_version_is_the_hash_of_this_crates_sources`.
+include!(concat!(env!("OUT_DIR"), "/wire_fingerprint.rs"));
+
+use serde::{Deserialize, Serialize};
+
+pub const PIPE_NAME: &str = r"\\.\pipe\gbfr-logs";
+
+/// Localhost TCP endpoint used instead of the named pipe when the hook runs
+/// under Wine/Proton — a native Linux app cannot open Wine named pipes. Same
+/// length-delimited framing and bincode payload as the pipe.
+pub const TCP_PORT: u16 = 39371;
+pub const TCP_ADDR: &str = "127.0.0.1:39371";
+
+/// Base of the synthetic per-PLAYER actor index. The game's own actor index and
+/// player key are CHARACTER-scoped — two players on the same character share
+/// both, which merged their meter rows (live-proven 2026-07-18). The party slot
+/// from the actor's embedded record is the only player-unique, mode-independent
+/// key, so player-attributed events carry `PLAYER_SLOT_INDEX_BASE | slot` in
+/// `actor_index`/`parent_index`. The encoding crosses the wire, so it lives
+/// here — the hook builds keys and the parser recognizes them with the SAME
+/// definitions.
+pub const PLAYER_SLOT_INDEX_BASE: u32 = 0xF000_0000;
+
+/// The body classes a Primal Burst is dealt by — `So0300` / `So0400` / `So0500`,
+/// which the game's own summon table names "(Primal Burst) Catastrophe / Azure
+/// Ruin / Desert Flare".
+///
+/// A Primal Burst is dealt by its own `So` class rather than by the body an
+/// ordinary summon call spawns, so the body is what tells the two apart: both
+/// report [`SUMMON_ATTACK_ACTION_ID`] as their action id. Shared here so the
+/// hook's summon-owner resolution and the parser's meter filters classify from
+/// one list.
+pub const PRIMAL_BURST_BODY_HASHES: &[u32] = &[
+    0x5418B8F8, // So0300  Catastrophe
+    0x32776C5B, // So0400  Azure Ruin
+    0x870A9DFE, // So0500  Desert Flare
+];
+
+/// The action id every summon hit and every Primal Burst reports.
+pub const SUMMON_ATTACK_ACTION_ID: u32 = 80000;
+
+/// The per-player event key for a party slot (0..=3).
+pub fn player_slot_key(party_index: u8) -> u32 {
+    PLAYER_SLOT_INDEX_BASE | (party_index.min(3) as u32)
+}
+
+/// True only for the four real slot keys (`BASE | 0..=3`). A plain
+/// `key & BASE == BASE` mask test is NOT enough: v2.0.2 enemy actor indexes are
+/// pointer-like values (e.g. 0xF1EBxxxx) that satisfy the mask — live-caught
+/// 2026-07-21 when a boss-sourced guarded hit "resolved" to slot 4058884280.
+pub fn is_player_slot_key(key: u32) -> bool {
+    key & !0x3 == PLAYER_SLOT_INDEX_BASE
+}
+
+/// The party slot (0..=3) behind a player slot key; `None` for anything else.
+pub fn party_slot_of(key: u32) -> Option<usize> {
+    is_player_slot_key(key).then_some((key & 0x3) as usize)
+}
+
+/// `Default` is the all-zero actor: what a hit with no resolvable attacker
+/// sends, which reads as unknown-source damage on the parser side. Derive only
+/// — bincode encodes the fields, so this does not touch the wire format.
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
+pub struct Actor {
+    /// Index of the actor, unique in the party.
+    pub index: u32,
+    /// Hash ID of the actor.
+    pub actor_type: u32,
+    /// Index of the actor's parent. If no parent, then it's the same as `index`.
+    pub parent_index: u32,
+    /// Hash ID of this actor's parent. If no parent, then it's the same as `actor_type`.
+    pub parent_actor_type: u32,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Copy)]
+pub enum ActionType {
+    /// Link Attack
+    LinkAttack,
+    /// Skybound Arts
+    SBA,
+    /// Supplementary Damage containing the original skill ID that trigged it.
+    SupplementaryDamage(u32),
+    /// Damage over time, containing the effect type: 0 poison, 1 burn, 2 darkburn.
+    /// Populated for real since the v2.0.2 `getDotDamage` hook fix; older logs carry 0
+    /// for every type. NOT a skill id — the parser merges all types into one breakdown
+    /// row because they share a single display name.
+    DamageOverTime(u32),
+    /// Normal Skill Attack containing the skill ID.
+    Normal(u32),
+    /// Perfect Guard's counter-stun (no damage event of its own — synthesized by
+    /// the parser from `OnPerfectGuardStun` messages into a zero-damage breakdown
+    /// row). Appended last: bincode encodes the variant index (append-only rule).
+    PerfectGuard,
+    /// A Perfect Guard of The World's "Quickening" (synthesized by the parser
+    /// from `OnPerfectGuardQuickening` marker messages). Carries only a guard
+    /// count: no stun (the instant gauge fill happens outside any hooked call)
+    /// and no damage (the scripted counter damage is intentionally untracked).
+    /// Appended last per the append-only rule.
+    PerfectGuardQuickening,
+    /// Stun applied by a non-guard player zero-damage effect (synthesized by the
+    /// parser from `OnStunEffect` messages into a zero-damage, stun-only
+    /// breakdown row). Live-confirmed 07-21 as Eugen's sticky grenade. The `u32`
+    /// is a per-character effect index (always 0 today — the source events carry
+    /// no discriminator yet), reserved so a character with more than one such
+    /// proc can name them separately (`stun-effect-0`, `stun-effect-1`, ...)
+    /// without a breaking variant change. Appended last per the append-only rule.
+    StunEffect(u32),
+}
+
+impl Display for ActionType {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        match self {
+            ActionType::LinkAttack => write!(f, "Link Attack"),
+            ActionType::SBA => write!(f, "Skybound Arts"),
+            ActionType::SupplementaryDamage(id) => write!(f, "Supplementary Damage ({})", id),
+            ActionType::DamageOverTime(id) => write!(f, "Damage Over Time ({})", id),
+            ActionType::Normal(id) => write!(f, "Skill ({})", id),
+            ActionType::PerfectGuard => write!(f, "Perfect Guard"),
+            ActionType::PerfectGuardQuickening => write!(f, "Perfect Guard (Quickening)"),
+            ActionType::StunEffect(id) => write!(f, "Stun Effect ({})", id),
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct DamageEvent {
+    pub source: Actor,
+    pub target: Actor,
+    pub damage: i32,
+    pub flags: u64,
+    pub action_id: ActionType,
+    pub attack_rate: Option<f32>,
+    pub stun_value: Option<f32>,
+    pub damage_cap: Option<i32>,
+    /// Pre-cap base damage (the value before `min(base, cap)` clamps it), read
+    /// from the game's DamageInstance (+0x2D4, v2.0.2). `None` on old logs and on
+    /// hooks that don't provide it. Lets the parser compute exact cap detection
+    /// (`base > cap`) and the game's overcap %: `(base / cap) * 100`.
+    pub base_damage: Option<f32>,
+    /// The target's remaining HP AFTER this hit, read from its `ExHp` component
+    /// (embedded at instance+0x150; current = +0x160, statically derived v2.0.2).
+    /// `None` on old logs and when the read fails its sanity checks.
+    pub target_current_hp: Option<u64>,
+    /// The target's maximum HP (`ExHp` +0x168). `None` alongside
+    /// `target_current_hp`.
+    pub target_max_hp: Option<u64>,
+    /// Attack-class flags (`instance+0xF0`). Bits `0x40000` (Skybound Art) and
+    /// `0x10000` (Skill) select which per-player cap-up applies; neither means
+    /// Normal, and `0x40000` wins over `0x10000`. `None` on old logs.
+    #[serde(default)]
+    pub class_flags: Option<u32>,
+    /// The ATTACKER's own remaining HP when the hit was registered, read from
+    /// its `ExHp` component — the same `instance+0x150` embed
+    /// [`DamageEvent::target_current_hp`] is read from, against the source actor
+    /// instead of the target. `ExHp` has exactly one non-zero base-class-descriptor
+    /// offset in the whole v2.0.4 image (336 = 0x150), and every player and enemy
+    /// class checked carries it there, so this is the same component read, not a
+    /// second offset that could drift independently.
+    ///
+    /// Read BEFORE the game's own damage call, unlike the target pair, which is
+    /// read after so a killing blow reports 0: the hit's cap was computed by the
+    /// DamageInstance builder before that call, so an HP-gated cap trait
+    /// ("while at 75% HP or more") has to be judged against the HP the builder
+    /// saw. `None` on old logs, on hits from an actor whose HP read fails its
+    /// sanity checks, and on the damage-TAKEN stream (the attacker there is an
+    /// enemy, whose HP is not a cap input).
+    #[serde(default)]
+    pub source_current_hp: Option<u64>,
+    /// The attacker's maximum HP (`ExHp` +0x18). `None` alongside
+    /// [`DamageEvent::source_current_hp`]; the two are read as one guarded pair.
+    #[serde(default)]
+    pub source_max_hp: Option<u64>,
+    /// Every status the attacker was carrying when the hit was registered.
+    ///
+    /// Captured only for hits whose SOURCE actor resolves to a party slot on its
+    /// own record — i.e. a player's own body. A summon, pet or transformed body
+    /// carries `None` rather than a guess: those actors are a different class
+    /// family and their component layout is not the one this read was verified
+    /// against.
+    ///
+    /// `None` means "not captured" (an old log, a non-player source, an
+    /// unreadable list); `Some(vec![])` means "captured, and the attacker held
+    /// nothing". The distinction is load-bearing for any consumer that treats a
+    /// missing buff as evidence a conditional cap source did NOT apply.
+    #[serde(default)]
+    pub source_statuses: Option<Vec<SourceStatus>>,
+    /// Raw DamageInstance window `0xC0..0x340` (640 bytes), copied AFTER the
+    /// game's own damage call so the gate bytes the call writes (crit
+    /// +0x15D .. Break +0x163) are visible. The hook records, it does not
+    /// interpret: the offset map lives in `parser::v1::damage_facts`, so a
+    /// wrong interpretation is a parser fix and the logs stay good. `None` on
+    /// old logs, DoT ticks, and when the window fails its readability probe.
+    ///
+    /// Encoded with `serde_bytes`: a plain `Vec<u8>` would serialize to CBOR
+    /// as an integer array (~1.7x the size of these windows at rest), while
+    /// this emits a compact byte string and its visitor still accepts the
+    /// array form on read.
+    #[serde(default, with = "serde_bytes")]
+    pub instance_snapshot: Option<Vec<u8>>,
+    /// Raw SOURCE-actor-instance window `0x2480..0x24A0` (32 bytes), captured
+    /// pre-call (the builder computed this hit from pre-call state), and only
+    /// for attackers whose own record carries a party slot — the offsets are
+    /// verified against the `Pl####` layout alone. Known residents: elemental
+    /// base `+0x2488`, at-cap overflow k `+0x249C`; the rest of the window is
+    /// captured for future interpretation.
+    #[serde(default, with = "serde_bytes")]
+    pub source_snapshot: Option<Vec<u8>>,
+    /// Raw window `record+0x18..0x28` (16 bytes) off the attacker's own
+    /// per-player stats record, captured pre-call alongside
+    /// [`DamageEvent::source_snapshot`] — same player-family gate, same
+    /// "state before the call decided the cap" reasoning.
+    ///
+    /// The record pointer is reached from the attacker's specified-instance
+    /// pointer (the same pointer [`DamageEvent::source_snapshot`] is read
+    /// from) in two RE-verified hops, both already load-bearing elsewhere in
+    /// this repo (`cap_oracle.rs` / `dmg_oracle.rs`): `holder =
+    /// *(attacker+0x2300)`, then `record = holder.vtable[0x9f0](holder)` — a
+    /// `this`-only virtual getter, the same one the game's own damage
+    /// formula calls. Known residents of the window: `+0x1C` SBA class
+    /// dmg%, `+0x24` Skill class dmg% (damage-head formula tree, "record
+    /// twin of the cap's fused record"); the rest is captured for future
+    /// interpretation. `None` on old logs, DoT ticks, the damage-TAKEN
+    /// stream, and when the pointer chain or window read fails.
+    #[serde(default, with = "serde_bytes")]
+    pub record_snapshot: Option<Vec<u8>>,
+}
+
+/// One status held by the attacker at the moment of a hit, as
+/// [`DamageEvent::source_statuses`] reports it.
+///
+/// Deliberately small — the effect, its count, and one probed cached term:
+/// this is a per-hit snapshot on a stream that carries thousands of events
+/// per fight, and everything else about a status (its caster, its cause, its
+/// class, its window) is already on the [`StatusApplyEvent`] /
+/// [`StatusRemoveEvent`] pair, keyed by the same `status_id`.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
+pub struct SourceStatus {
+    /// `status.tbl` StatusId — the same id [`StatusApplyEvent::status_id`] carries.
+    pub status_id: u32,
+    /// Effect level, by the same rule [`StatusApplyEvent::stacks`] uses: the
+    /// object's `+0xb0` count for the classes `status.tbl` marks `HasLevels`,
+    /// and 1 for everything else.
+    pub stacks: u32,
+    /// Candidate cached per-status term, as raw f32 bits (`status+0x8`).
+    /// Proven live for cap buffs (`IStatusDamageLimitBuff+8` holds the live
+    /// cap term); a PROBE for every other status class — downstream code
+    /// interprets or ignores it per class, and a relabel never touches logs.
+    /// `None` when the read is unavailable or the bits are not a finite f32.
+    #[serde(default)]
+    pub term_bits: Option<u32>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct Sigil {
+    pub first_trait_id: u32,
+    pub first_trait_level: u32,
+    pub second_trait_id: u32,
+    pub second_trait_level: u32,
+    pub sigil_id: u32,
+    pub equipped_character: u32,
+    pub sigil_level: u32,
+    pub acquisition_count: u32,
+    pub notification_enum: u32,
+}
+
+/// One equipped summon, read from the player record (v2.0.2 expansion: 4
+/// account-level summons whose bonuses apply party-wide). Ids are game hashes:
+/// `summon_id` keys `summon.tbl`, `main_trait_id` is an ordinary trait id (the
+/// `traits:` lang namespace names it), `bonus_id` keys `summon_base_param.tbl`.
+/// `bonus_level` is 0-indexed against that table's ten LevelNValue columns.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct EquippedSummon {
+    pub summon_id: u32,
+    pub main_trait_id: u32,
+    pub main_trait_level: u32,
+    pub bonus_id: u32,
+    pub bonus_level: u32,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct WeaponInfo {
+    /// Weapon ID Hash
+    pub weapon_id: u32,
+    /// How many uncap stars the weapon has
+    pub star_level: u32,
+    /// Number of plus marks on the weapon
+    pub plus_marks: u32,
+    /// Weapon's awakening level
+    pub awakening_level: u32,
+    /// First trait ID
+    pub trait_1_id: u32,
+    /// First trait level
+    pub trait_1_level: u32,
+    /// Second trait ID
+    pub trait_2_id: u32,
+    /// Second trait level
+    pub trait_2_level: u32,
+    /// Third trait ID
+    pub trait_3_id: u32,
+    /// Third trait level
+    pub trait_3_level: u32,
+    /// Wrightstone used on the weapon
+    pub wrightstone_id: u32,
+    /// Current weapon level
+    pub weapon_level: u32,
+    /// Weapon's HP Stats (before plus marks)
+    pub weapon_hp: u32,
+    /// Weapon's Attack Stats (before plus marks)
+    pub weapon_attack: u32,
+}
+
+/// Overmastery, also known as `limit_bonus`.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct Overmastery {
+    /// Overmastery ID
+    pub id: u32,
+    /// Flags
+    pub flags: u32,
+    /// Value
+    pub value: f32,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct OvermasteryInfo {
+    pub overmasteries: Vec<Overmastery>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct PlayerStats {
+    pub level: u32,
+    pub total_hp: u32,
+    pub total_attack: u32,
+    pub stun_power: f32,
+    pub critical_rate: f32,
+    pub total_power: u32,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct PlayerLoadEvent {
+    pub sigils: Vec<Sigil>,
+    pub character_name: CString,
+    pub display_name: CString,
+    pub character_type: u32,
+    pub party_index: u8,
+    pub actor_index: u32,
+    pub is_online: bool,
+    pub weapon_info: WeaponInfo,
+    pub overmastery_info: OvermasteryInfo,
+    pub player_stats: PlayerStats,
+}
+
+/// Minimal player metadata resolved from the identity snapshot alone.
+///
+/// The full [`PlayerLoadEvent`] reads sigils, weapon, overmastery and stats from
+/// equipment layouts that shifted in the 2.0 update and are not yet re-derived.
+/// This event carries only the always-available identity fields (name, party
+/// slot, online flag) so the meter can distinguish players — in particular two
+/// players on the same character, and online players that would otherwise show
+/// as `[Guest]` — without manufacturing empty equipment data.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct PlayerIdentityEvent {
+    pub character_name: CString,
+    pub display_name: CString,
+    pub character_type: u32,
+    pub party_index: u8,
+    pub actor_index: u32,
+    pub is_online: bool,
+    /// Equipped sigils recovered from the identity snapshot (v2.0.2+: the snapshot
+    /// leads with 13 sigil entries). Empty when the snapshot carried no resolvable
+    /// sigil data; `#[serde(default)]` keeps pre-existing stored logs readable.
+    #[serde(default)]
+    pub sigils: Vec<Sigil>,
+    /// The 4 equipped summons read inline from the player record (+0x5DD8,
+    /// live-verified 2026-07-17). Account-level — every record of a local party
+    /// carries the same set. Empty for records with no populated slots;
+    /// `#[serde(default)]` keeps pre-existing stored logs readable.
+    #[serde(default)]
+    pub summons: Vec<EquippedSummon>,
+    /// The 4 equipped overmasteries. Primary source is the record's inline block
+    /// (`record+0x58B8`, 4 × `{u32 id, u32 level_bits, u32 effect_idx, f32 value}`,
+    /// live-verified 2026-07-17) which populates in-quest for every party slot and
+    /// carries the computed magnitude in [`Overmastery::value`]; when that block is
+    /// still sentinel-empty the town loadout pairs (`*(record+0x5DC8)+0x3208`,
+    /// id+level only, `value` 0.0) stand in. `level_bits` is a single-bit flag:
+    /// bit N → level N+1 (max bit 9 = level 10); carried in [`Overmastery::flags`].
+    /// `#[serde(default)]` keeps pre-existing stored logs readable.
+    #[serde(default)]
+    pub overmasteries: Vec<Overmastery>,
+    /// Character level: the record's level input (`record+0x5B44`, populated
+    /// in-quest) with the town loadout (`*(record+0x5DC8)+0x3530`) as fallback.
+    /// 0 when unavailable; `#[serde(default)]` keeps pre-existing stored logs
+    /// readable.
+    #[serde(default)]
+    pub player_level: u32,
+    /// The 4 equipped ability (skill) ids inline in the record
+    /// (`record+0x5AF4..0x5B04`, live-verified 2026-07-17). Values are game
+    /// hashes of `AB_PL####_##` action names. Empty when unpopulated;
+    /// `#[serde(default)]` keeps pre-existing stored logs readable.
+    #[serde(default)]
+    pub abilities: Vec<u32>,
+    /// Equipped weapon identity as the full game key name, e.g.
+    /// `WEP_PL2700_02_01` (weapon.tbl `Key`). Resolved by walking the
+    /// charid-keyed equipped-state map in the save root (`*(DAT_147c24980)`,
+    /// map header +0x40/+0x50/+0x68; entry+0x00 holds the id as 0x10-byte
+    /// ASCII "PPPP_WW_UU", live-verified 2026-07-17). Empty when the record's
+    /// charid has no entry; `#[serde(default)]` keeps stored logs readable.
+    #[serde(default)]
+    pub weapon_key: String,
+    /// Master level, combined level+stars as the game stores it
+    /// (`record+0x5B60`; 55 = level 50 + 5 stars, live-verified for the local
+    /// player — AI companion records read 0). `#[serde(default)]` keeps
+    /// pre-existing stored logs readable.
+    #[serde(default)]
+    pub master_level: u32,
+    /// Unlocked skillboard (master trait) node effect ids. Reimplements the
+    /// game's own query (`FUN_140297bc0`, decompiled 2026-07-17): CharaPower
+    /// (`*(DAT_147c24a78)`) maps charid → node-key vector (map header
+    /// +0x728/+0x738/+0x750); each key resolves through the node map
+    /// (+0x330/+0x348/+0x320) to a row whose unlock bit (`row+0x5C`) is tested
+    /// against the record's inline 400×0x38 `{id, bits}` array at
+    /// `record+0x138`; unlocked rows contribute `row+0x74` (the same id space
+    /// as the network profile blob's 50-id list). Empty when CharaPower has no
+    /// entry for the charid (e.g. remote players). `#[serde(default)]` keeps
+    /// stored logs readable.
+    #[serde(default)]
+    pub skillboard: Vec<u32>,
+    /// The record's inline stat block (`record+0x5B44..0x5B60`, decompiled from
+    /// the dispatcher `FUN_140a23e70` case-3 fill and the town loadout-apply
+    /// `FUN_1407a1080`: loadout+0x3530..0x3550 maps 1:1 onto it). Field labels
+    /// follow the pre-2.0 `PlayerStats` layout, which the block mirrors
+    /// (level, hp, attack, ?, stun f32, ?, power); pending one live-run
+    /// confirmation against the status screen. `None` when unpopulated;
+    /// `#[serde(default)]` keeps stored logs readable.
+    #[serde(default)]
+    pub stats: Option<RecordStats>,
+    /// The equipped weapon's full state (id, progression, wrightstone and
+    /// active innate traits). Live-labeled 2026-07-17 against the user's
+    /// Hraesvelgr: the record's `+0x5E80` blob (online contexts) carries it at
+    /// blob+0x50, and the per-character save rows
+    /// (`*(DAT_147c24980)+0x129B08` map, 0x190 stride) carry the identical
+    /// struct at row+0x70. `None` when neither source resolves;
+    /// `#[serde(default)]` keeps stored logs readable.
+    #[serde(default)]
+    pub weapon_state: Option<WeaponState>,
+    /// Damage-cap-up for NORMAL attacks, as the builder uses it (the raw
+    /// record field already scaled by 0.01). Read from `record+0x28`.
+    ///
+    /// This is the dominant cap term — 13.1 to 19.0 in the 2026-08-08 capture,
+    /// against ~3.6 for every other itemized contribution combined. It is
+    /// CAPTURED rather than reproduced because its provenance in the stored
+    /// loadout is unknown; see the design's "What Plan A changed".
+    /// `None` on old logs and when the record is unreadable.
+    #[serde(default)]
+    pub cap_up_normal: Option<f32>,
+    /// The same for SKILL attacks (`record+0x30`), selected when the hit's
+    /// class flags have `0x10000` and not `0x40000`.
+    #[serde(default)]
+    pub cap_up_skill: Option<f32>,
+    /// The same for Skybound Arts (`record+0x34`), selected when the hit's
+    /// class flags have `0x40000` (which wins over `0x10000`).
+    #[serde(default)]
+    pub cap_up_sba: Option<f32>,
+    /// The Mastery (AP-tree) damage-cap total for NORMAL attacks, summed from
+    /// the record's resolved limit-bonus store (the 400 × 0x38 array at
+    /// `record+0x138`; cap-typed param slots 103/104/105, 106 folded into all
+    /// three). In TABLE units (684.0 = +684%), NOT the builder units the
+    /// `cap_up_*` triple uses — this term is already fused inside that triple,
+    /// so it itemizes the record, it never adds to it. `None` on old logs and
+    /// while the store is still empty.
+    #[serde(default)]
+    pub limit_bonus_cap_normal: Option<f32>,
+    /// The same for SKILL attacks (store type 104 + 106).
+    #[serde(default)]
+    pub limit_bonus_cap_skill: Option<f32>,
+    /// The same for Skybound Arts (store type 105 + 106).
+    #[serde(default)]
+    pub limit_bonus_cap_sba: Option<f32>,
+}
+
+/// Training-room ("Trial") lifecycle. The training room has no flow object and
+/// never runs `on_load_quest_state`, so it carries no quest id and no game
+/// timer — the parser keeps its own encounter id and elapsed time.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct TrialLifecycleEvent {}
+
+/// One trait id/level pair (wrightstone or innate weapon skill).
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct WeaponTraitPair {
+    /// Trait id (`SKILL_*` hash, the `traits` lang namespace).
+    pub id: u32,
+    /// Trait level; 0 when not (yet) known.
+    pub level: u32,
+}
+
+/// The v2.0.2 record-inline stat block. Labels tentative (see
+/// [`PlayerIdentityEvent::stats`]): `hp`/`attack`/`stun_power`/`power` follow
+/// the old `PlayerStats` field order; `unk_50` is the one slot whose meaning is
+/// still unconfirmed (old layout suggests it is the pre-2.0 `unk_0c` filler).
+///
+/// Offsets below name the wire-replicated mirror the block was first found at.
+/// The hook now reads the same layout from the record head block, which the
+/// stat-compute pass fills with computed totals (see `read_record_stats`).
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct RecordStats {
+    /// Character level (`record+0x5B44`).
+    pub level: u32,
+    /// `record+0x5B48` — total/base HP (label pending live confirm).
+    pub hp: u32,
+    /// `record+0x5B4C` — total/base attack (label pending live confirm).
+    pub attack: u32,
+    /// `record+0x5B50` — unknown (town-filled only).
+    pub unk_50: u32,
+    /// `record+0x5B54` — stun power (the block's only float, matching the old
+    /// layout's stun_power f32).
+    pub stun_power: f32,
+    /// `record+0x5B58` — critical hit rate in percent. Was `unk_58: u32` before
+    /// 2026-07-24, so logs older than that carry `unk_58` and no
+    /// `critical_rate` and this field has to stay optional (see the rename rule
+    /// in the crate docs). Their old value is not read back: it came from the
+    /// wire-replicated mirror block this struct stopped reading because it
+    /// holds stale town-filled values.
+    #[serde(default)]
+    pub critical_rate: f32,
+    /// `record+0x5B5C` — total power / power level candidate (town-filled).
+    pub power: u32,
+}
+
+/// The equipped weapon's state (see [`PlayerIdentityEvent::weapon_state`]).
+///
+/// Struct layout in game memory (u32 indices into blob+0x50 / row+0x70,
+/// live-labeled against a maxed Hraesvelgr — Stun Power 20 / ATK 15 /
+/// Provoke 10 wrightstone, Catastrophe Nova / Glass Cannon / DMG Cap /
+/// Sigil Booster innate skills): `[1]` weapon.tbl Key hash (incl. the
+/// transcendence variant, e.g. `WEP_PL2700_06_03`), `[4]` exp, `[5]` uncap
+/// stars, `[6]` plus marks, `[7]` awakening level, `[8..13]` the three
+/// wrightstone `{id, level}` pairs, `[14]` wrightstone item id
+/// (`ITEM_25_####`). Active innate skill ids: blob+0x94 (5 slots,
+/// sentinel-terminated) or, on the save-row path, resolved from the id at
+/// row+0xB4 through the static weapon-skill table `*(DAT_147c24af8)+0x370`.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct WeaponState {
+    /// weapon.tbl Key hash of the equipped weapon (transcendence-variant row).
+    pub weapon_id: u32,
+    /// Current weapon exp.
+    pub exp: u32,
+    /// Uncap star count.
+    pub star_level: u32,
+    /// Plus marks (+0..99).
+    pub plus_marks: u32,
+    /// Awakening level (0..10).
+    pub awakening_level: u32,
+    /// Wrightstone item id (`ITEM_25_####` hash; 0 when none equipped).
+    pub wrightstone_id: u32,
+    /// The wrightstone's up-to-3 trait id/level pairs.
+    pub wrightstone_traits: Vec<WeaponTraitPair>,
+    /// The weapon's ACTIVE innate skills (awakening/transcendence variants
+    /// already applied by the game — these can differ from the base
+    /// weapon-table skills). Levels are 0 until their storage is located.
+    pub innate_traits: Vec<WeaponTraitPair>,
+}
+
+/// Emitted on each Conflux room load. The reception dispatcher rebuilds an
+/// EndlessMode flow once per ROOM (the flow slot resets to null each room), so
+/// this fires per room — NOT per run. Run identity is derived by the parser from
+/// `manager_ptr`: the `EndlessModeQuestManager` pointer is stable across a run's
+/// rooms and changes between runs, so a room whose `manager_ptr` differs from the
+/// active run's (or arrives with no active run) opens a new run.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct ConfluxRoomEnterEvent {
+    /// The room's quest identifier (0 if not resolvable at emit time).
+    pub quest_id: u32,
+    /// `EndlessModeQuestManager` pointer — the stable per-run identity.
+    pub manager_ptr: u64,
+}
+
+/// Emitted when a Conflux upgrade/buff installs on the player. `buff_id` is the
+/// raw ability/buff identifier; single-player, so no player attribution.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct ConfluxBuffAcquiredEvent {
+    pub buff_id: u32,
+}
+
+/// Emitted when a Conflux run concludes (EndlessModeQuestManager destroyed).
+/// Carries the manager pointer so the parser only finalizes the matching run.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct ConfluxRunEndEvent {
+    /// `EndlessModeQuestManager` pointer being destroyed (matches the run's identity).
+    pub manager_ptr: u64,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct AreaEnterEvent {
+    /// Quest ID, last known. Could be stale if no other quest was ran while changing areas. 0 if no quest.
+    pub last_known_quest_id: u32,
+    /// Elapsed time in seconds, the in-game quest timer. Could be stale if no other quest was ran while changing areas.
+    pub last_known_elapsed_time_in_secs: u32,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct QuestCompleteEvent {
+    pub quest_id: u32,
+    pub elapsed_time_in_secs: u32,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct OnUpdateSBAEvent {
+    pub actor_index: u32,
+    pub sba_value: f32,
+    pub sba_added: f32,
+}
+
+/// Whenever SBA is attempted, but not necessarily hit.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct OnAttemptSBAEvent {
+    pub actor_index: u32,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct OnPerformSBAEvent {
+    pub actor_index: u32,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct OnContinueSBAChainEvent {
+    pub actor_index: u32,
+}
+
+/// Why a player's SBA gauge went up.
+///
+/// The game routes every gauge ADDITION through one function (v2.0.3
+/// `FUN_140bb1fc0`), which the hook detours. What differs is how it got there,
+/// and that is what this names. Only `Skill` corresponds to a breakdown row;
+/// every other variant is gauge the player generated without a damaging hit of
+/// their own, and the parser files those on a separate list so a gauge-only
+/// cause can never manufacture a hit-less damage row.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SbaGainCause {
+    /// A damaging hit of the player's own, carrying the same CLASSIFIED action
+    /// the hit's `DamageEvent` carries — so the parser can find the row that
+    /// hit opened, including link attacks and SBA hits.
+    Skill(ActionType),
+    /// A hit the player RECEIVED was being registered when their gauge rose.
+    DamageTaken,
+    /// The just-guard grant site (v2.0.3 `0x1f36f70`).
+    PerfectGuard,
+    /// An effect-record grant (`0x26f9640` / `0xbcaa90`). The payload is the
+    /// record's key where the hook could read one, else 0.
+    Effect(u32),
+    /// A four-slot broadcast award — every party member gains at once
+    /// (`0x1b07ae0` / `0x31ec9e0`, distinguished by argument 9).
+    PartyAward,
+    /// The summon/director flat award (`0x6506b0`, argument 11).
+    DirectorAward,
+    /// Gauge granted at quest start (`0x6c50f0` / `0x6c4910`).
+    QuestStart,
+    /// A grant site we have located but cannot name in gameplay terms yet. The
+    /// payload is a stable per-site tag (see `sba.rs`'s `SITE_*` constants), so
+    /// the UI can distinguish them and a future capture can name them.
+    Site(u32),
+    /// A rise with nothing parked and no flag set — an unlocated site. Its
+    /// amount is logged under `hookdiag` so the next site can be found.
+    Unknown,
+    /// A rise inside the just-dodge reward handler (v2.0.3 `0x26f9640`, the
+    /// same frame the `Effect(0xD2C8E10A)` record grant runs in — briefly
+    /// emitted under that key before the frame's semantic was live-confirmed,
+    /// ~42.15 gauge per perfect dodge, log 1694 2026-08-04). Appended last per
+    /// the append-only rule.
+    PerfectDodge,
+    // -- Deduced, not read. ---------------------------------------------------
+    //
+    // Everything above is something the hook OBSERVED: a cause parked on the
+    // thread the gauge moved on, or a flag the gauge update itself carried.
+    // The three below are the parser's conclusions about gauge no hook could
+    // see — a remote party member's, which arrives as a bare level from the
+    // four-slot poll (see `parser::v1::sba_inference`).
+    //
+    // They are separate variants rather than a flag on the existing ones on
+    // purpose: a deduction must never be indistinguishable from a measurement,
+    // in the stored log or in the UI. Nothing in the hook ever emits these.
+    /// An action's share of a remote player's gauge rise — split across the
+    /// rise's hits by their authored per-action weights. Carries the same
+    /// CLASSIFIED action a hook-read `Skill` cause would, so it routes to the
+    /// identical breakdown row. Appended last per the append-only rule.
+    Inferred(ActionType),
+    /// A rise matching the flat SBA-chain contribution exactly. Appended last
+    /// per the append-only rule.
+    InferredChainGrant,
+    /// A rise correlated with a hit the player RECEIVED. Appended last per the
+    /// append-only rule.
+    InferredDamageTaken,
+}
+
+impl SbaGainCause {
+    /// Did the parser deduce this cause, rather than the hook read it?
+    ///
+    /// The one place the distinction is expressed in code, so a future variant
+    /// has exactly one list to be added to.
+    pub fn is_inferred(&self) -> bool {
+        matches!(
+            self,
+            SbaGainCause::Inferred(_)
+                | SbaGainCause::InferredChainGrant
+                | SbaGainCause::InferredDamageTaken
+        )
+    }
+}
+
+/// Emitted for EVERY measured gauge rise whose owner resolves, with a `cause`
+/// naming how it was granted. The old Normal-only filter is gone: the parser
+/// keys breakdown rows by the classified `ActionType`, so a link-attack or SBA
+/// hit's gain lands on that hit's own row rather than being flattened into a
+/// `Normal` row it does not belong to.
+///
+/// Separate from [`OnUpdateSBAEvent`], which is a slot POLL: that path diffs
+/// each party member's gauge against the last poll and cannot say what raised
+/// it. This one is emitted from the gauge-UPDATE path: the game's gauge update
+/// runs as a synchronous callee of its register-hit gate, so the hook's gate
+/// detour parks the hit's damage instance on a thread-local for the duration
+/// of the call and the gauge hook reads it back — the parked hit IS the cause,
+/// no timing heuristic involved.
+///
+/// LOCAL PLAYER ONLY in practice: only locally-processed hits pass through
+/// the gate — a remote member's gauge is synced rather than computed here, so
+/// no hit we can see produced it; the poll path remains the only source for
+/// them.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct SbaGainEvent {
+    /// The generating player's slot key (`PLAYER_SLOT_INDEX_BASE | slot`).
+    pub actor_index: u32,
+    /// Raw action id off the causing `DamageInstance` (+0x16C). Kept because
+    /// logs stored before `cause` existed carry their attribution here; the
+    /// parser reads a causeless event as `ActionType::Normal(action_id)`.
+    /// New events carry it only for `Skill(Normal(id))` causes, else 0.
+    pub action_id: u32,
+    /// Gauge added, measured across the game's own gauge-update call.
+    pub amount: f32,
+    /// Why the gauge rose. `None` only in logs stored before causes existed;
+    /// the parser reads that as `Skill(Normal(action_id))`, the old meaning.
+    #[serde(default)]
+    pub cause: Option<SbaGainCause>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct OnDeathEvent {
+    pub actor_index: u32,
+    pub death_counter: u32,
+}
+
+/// Per-hit stun applied to an enemy, captured from the game's network stun-apply
+/// message handler (v2.0.2 `FUN_140b43b40`). Online, enemy stun is
+/// host-authoritative and lands via these messages asynchronously — the damage
+/// hook's accumulator-delta method structurally reads 0 there — so this event is
+/// the online stun source. `actor_index` is the per-player slot key of the source
+/// (resolved through the message's entity handle); `stun_amount` is the measured
+/// accumulator delta (ramp bonus and stun-cap clamping included).
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct OnPlayerStunEvent {
+    pub actor_index: u32,
+    pub stun_amount: f32,
+}
+
+/// A quest ended without a result screen: the player confirmed retire/abandon
+/// (the in-game retire-select flag was set), or the fail screen was reached.
+/// `quest_id` is the hook's last-known quest id (0 = unknown, e.g. injected
+/// mid-quest); the parser prefers the id stamped on the encounter at its own
+/// load and uses this only as a fallback.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct OnQuestFailEvent {
+    pub quest_id: u32,
+}
+
+/// A status effect being applied to an actor.
+///
+/// `ability_id` is the action that CAUSED the effect, not the effect itself:
+/// two abilities granting the same buff must stay distinguishable, so the UI
+/// keys on the pair. `None` when the apply site cannot resolve the originating
+/// action — the UI then falls back to the bare effect name.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct StatusApplyEvent {
+    /// Who now holds the effect.
+    pub actor_index: u32,
+    /// Who applied it. `None` for effects with no attributable caster.
+    pub caster_index: Option<u32>,
+    /// The effect granted, from status.tbl.
+    pub status_id: u32,
+    /// The action that caused it. `None` when unresolvable.
+    pub ability_id: Option<u32>,
+    /// Stack count after this application. 1 for unstacking effects.
+    pub stacks: u32,
+    /// The status object's RTTI class, as a hash of its class NAME (never its
+    /// vtable address — that moves on a game patch, and a stored address would
+    /// silently resolve to a different class afterwards).
+    ///
+    /// `None` when the hook could not vouch for one. Names the row's source
+    /// where `ability_id` cannot: a passive has no action id, which is what the
+    /// 9998 sentinel means.
+    pub status_class: Option<u32>,
+    /// The action the caster was performing when it applied this. Names the
+    /// rows `ability_id` cannot, because a passive has no action id to record.
+    ///
+    /// Deliberately SEPARATE from `ability_id`, never substituted into it:
+    /// "the game recorded this cause" and "we inferred it from what the caster
+    /// was doing" are different claims, and collapsing them would make the
+    /// stored log lie about its own provenance.
+    pub caster_action_id: Option<u32>,
+}
+
+/// A status effect ending on an actor. Pairs with [`StatusApplyEvent`] by
+/// `(actor_index, status_id, ability_id)`.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct StatusRemoveEvent {
+    pub actor_index: u32,
+    pub status_id: u32,
+    pub ability_id: Option<u32>,
+}
+
+/// A tick of the in-game quest timer, in whole seconds since the quest loaded.
+/// The same clock the result screen reports as the clear time, so it excludes
+/// loading and pauses — which is what makes it a better DPS denominator than
+/// wall-clock elapsed time.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct QuestElapsedTimeEvent {
+    pub elapsed_time_in_secs: u32,
+}
+
+/// Link Time began (`active`) or ended (`!active`) for the party. Captured as
+/// a TRANSITION of the game's own link-time state — the emitter latches and
+/// only sends changes, so consumers can pair start/end into windows.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct LinkTimeEvent {
+    pub active: bool,
+}
+
+/// An enemy's battle mode changed (Normal / Overdrive / Break). `mode` is the
+/// game's OWN mode value, forwarded raw so a future game patch adding a mode
+/// cannot silently misfile it; [`EnemyModeEvent::MODE_BREAK`] and friends name
+/// the values live captures have confirmed. `actor_index` matches the index
+/// damage events carry for the same enemy.
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct EnemyModeEvent {
+    pub actor_index: u32,
+    pub mode: u32,
+}
+
+impl EnemyModeEvent {
+    pub const MODE_NORMAL: u32 = 0;
+    pub const MODE_OVERDRIVE: u32 = 1;
+    pub const MODE_BREAK: u32 = 2;
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub enum Message {
+    OnAreaEnter(AreaEnterEvent),
+    OnQuestComplete(QuestCompleteEvent),
+    DamageEvent(DamageEvent),
+    OnUpdateSBA(OnUpdateSBAEvent),
+    OnAttemptSBA(OnAttemptSBAEvent),
+    OnPerformSBA(OnPerformSBAEvent),
+    OnContinueSBAChain(OnContinueSBAChainEvent),
+    PlayerLoadEvent(PlayerLoadEvent),
+    OnDeathEvent(OnDeathEvent),
+    /// Player name + actor mapping without version-sensitive equipment data.
+    /// Used in 2.0 compatibility mode where the full player-load layout is unresolved.
+    PlayerIdentityEvent(PlayerIdentityEvent),
+    /// Conflux (EndlessMode) lifecycle. The reception dispatcher fires per ROOM, so
+    /// run identity is derived by the parser from `ConfluxRoomEnterEvent::manager_ptr`
+    /// (stable across a run's rooms). Run-end is the manager destructor.
+    ConfluxRoomEnter(ConfluxRoomEnterEvent),
+    ConfluxBuffAcquired(ConfluxBuffAcquiredEvent),
+    ConfluxRunEnd(ConfluxRunEndEvent),
+    OnPlayerStun(OnPlayerStunEvent),
+    /// Appended last (bincode encodes the variant index — see the crate doc
+    /// comment's append-only rule).
+    OnQuestFail(OnQuestFailEvent),
+    /// Stun dealt by a player's Perfect Guard. A guard produces no player
+    /// damage event; the capture is the SOURCE enemy's stun-accumulator delta
+    /// measured across its own (guarded) attack's `ProcessDamageEvent` call.
+    /// `actor_index` is the guarding player's slot key (the TARGET of the
+    /// guarded hit); `stun_amount` is the measured delta (ramp and cap
+    /// clamping included). Appended last per the append-only rule.
+    OnPerfectGuardStun(OnPlayerStunEvent),
+    /// A Perfect Guard of The World's "Quickening", detected via the game's
+    /// zero-damage marker event (`action_id == 0` + guard flag bit 5,
+    /// player-sourced). Distinct from `OnPerfectGuardStun` because the marker
+    /// carries no measurable stun (the boss's gauge fills asynchronously after
+    /// the call) — the parser only counts the guard. `actor_index` is the
+    /// guarding player's slot key; `stun_amount` is the in-call accumulator
+    /// delta (0.0 in every observed capture, kept for diagnostics). Appended
+    /// last per the append-only rule.
+    OnPerfectGuardQuickening(OnPlayerStunEvent),
+    /// Stun applied by a NON-guard player zero-damage effect — live-confirmed
+    /// 07-21 to be Eugen's sticky grenade applying stun when it sticks to a
+    /// target (action id 0, flags 0x6100000, flat ~25 stun). Distinct from
+    /// `OnPerfectGuardStun`: it carries real stun but is not a guard, so the
+    /// parser surfaces it as its own "Stun Effect" row instead of inflating the
+    /// Perfect Guard row. `actor_index` is the source player's slot key;
+    /// `stun_amount` is the measured accumulator delta. Appended last per the
+    /// append-only rule.
+    OnStunEffect(OnPlayerStunEvent),
+    /// Fired when a training session starts, which also tears down the previous
+    /// one. Covers the in-training Restart button. Appended last per the
+    /// append-only rule.
+    OnTrialStart(TrialLifecycleEvent),
+    /// Fired when the player clicks Quit Training. Appended last per the
+    /// append-only rule.
+    OnTrialEnd(TrialLifecycleEvent),
+    /// The in-game quest timer (IGT) ticked over to a new whole second. Sent
+    /// from the per-frame quest-sequence tick roughly once a second while a
+    /// quest is loaded, so the parser can use in-game time — not wall clock —
+    /// as the DPS denominator while the fight is still running. The frozen
+    /// clear time still arrives separately on `OnQuestComplete`. Appended last
+    /// per the append-only rule.
+    OnQuestElapsedTime(QuestElapsedTimeEvent),
+    /// A status effect applied to an actor. Appended last per the append-only
+    /// rule.
+    StatusApply(StatusApplyEvent),
+    /// A status effect ending. Appended last per the append-only rule.
+    StatusRemove(StatusRemoveEvent),
+    /// Gauge generated by one hit, with the action that caused it. Appended
+    /// last per the append-only rule.
+    SbaGain(SbaGainEvent),
+    /// Link Time began or ended for the party. Appended last per the
+    /// append-only rule.
+    LinkTime(LinkTimeEvent),
+    /// An enemy's battle mode changed (Normal / Overdrive / Break). Appended
+    /// last per the append-only rule.
+    EnemyMode(EnemyModeEvent),
+}
+
+#[cfg(test)]
+mod record_stats_tests {
+    use super::RecordStats;
+
+    /// The old field was `unk_58: u32`, but the game writes an f32 there and we
+    /// read it with an integer reader. Both are 4 bytes little-endian, so on
+    /// the positional bincode wire the retype is invisible.
+    ///
+    /// This says nothing about STORED logs: those are CBOR and key fields by
+    /// name, where the rename is breaking — see `stored_log_compat` in
+    /// `src-tauri/src/parser/v1/mod.rs`, which owns that half.
+    #[test]
+    fn old_unk_58_blob_decodes_as_critical_rate() {
+        // A log written by the old code: crit was 21.5%, stored as the u32
+        // reinterpretation of that float's bits.
+        let stored_bits = 21.5f32.to_bits();
+
+        let old_blob = bincode::serialize(&(
+            10u32,       // level
+            5000u32,     // hp
+            3000u32,     // attack
+            0u32,        // unk_50
+            12.5f32,     // stun_power
+            stored_bits, // unk_58, an f32 bit pattern read as u32
+            9999u32,     // power
+        ))
+        .expect("serialize");
+
+        let decoded: RecordStats = bincode::deserialize(&old_blob).expect("deserialize");
+
+        assert_eq!(decoded.level, 10);
+        assert_eq!(decoded.hp, 5000);
+        assert_eq!(decoded.attack, 3000);
+        assert_eq!(decoded.stun_power, 12.5);
+        assert_eq!(decoded.critical_rate, 21.5);
+        assert_eq!(decoded.power, 9999);
+    }
+}
+
+#[cfg(test)]
+mod sba_gain_tests {
+    use super::{ActionType, SbaGainCause, SbaGainEvent};
+
+    /// A stored log written before causes existed decodes with `cause: None`,
+    /// which the parser reads as the old meaning (the hit's own action).
+    #[test]
+    fn old_event_without_a_cause_still_decodes() {
+        #[derive(serde::Serialize)]
+        struct OldSbaGainEvent {
+            actor_index: u32,
+            action_id: u32,
+            amount: f32,
+        }
+
+        let old = OldSbaGainEvent {
+            actor_index: 0xF000_0000,
+            action_id: 1100,
+            amount: 12.5,
+        };
+        let blob = cbor4ii::serde::to_vec(Vec::new(), &old).expect("encode");
+        let new: SbaGainEvent = cbor4ii::serde::from_slice(&blob).expect("decode");
+
+        assert_eq!(new.action_id, 1100);
+        assert_eq!(new.cause, None);
+    }
+
+    /// The cause round-trips, carrying the CLASSIFIED action rather than a raw
+    /// id — the parser keys breakdown rows by the classified `ActionType`.
+    #[test]
+    fn cause_round_trips_through_cbor() {
+        let event = SbaGainEvent {
+            actor_index: 0xF000_0001,
+            action_id: 0,
+            amount: 35.0,
+            cause: Some(SbaGainCause::Skill(ActionType::LinkAttack)),
+        };
+        let blob = cbor4ii::serde::to_vec(Vec::new(), &event).expect("encode");
+        let back: SbaGainEvent = cbor4ii::serde::from_slice(&blob).expect("decode");
+        assert_eq!(
+            back.cause,
+            Some(SbaGainCause::Skill(ActionType::LinkAttack))
+        );
+    }
+
+    /// New variants append; an old event without one still decodes (the
+    /// backward-compat contract every cause addition must re-prove).
+    #[test]
+    fn perfect_dodge_round_trips() {
+        let event = SbaGainEvent {
+            actor_index: 0xF000_0000,
+            action_id: 0,
+            amount: 8.43,
+            cause: Some(SbaGainCause::PerfectDodge),
+        };
+        let blob = cbor4ii::serde::to_vec(Vec::new(), &event).expect("encode");
+        let back: SbaGainEvent = cbor4ii::serde::from_slice(&blob).expect("decode");
+        assert_eq!(back.cause, Some(SbaGainCause::PerfectDodge));
+    }
+}
+
+#[cfg(test)]
+mod source_state_tests {
+    use super::{DamageEvent, SourceStatus};
+
+    /// A stored log written before the source-state fields existed still
+    /// decodes, and reads them back as `None` — the crate's own rule for what an
+    /// `Option` field costs on disk, re-proven for this addition.
+    #[test]
+    fn a_log_without_source_state_still_decodes() {
+        #[derive(serde::Serialize)]
+        struct OldDamageEvent {
+            source: super::Actor,
+            target: super::Actor,
+            damage: i32,
+            flags: u64,
+            action_id: super::ActionType,
+            attack_rate: Option<f32>,
+            stun_value: Option<f32>,
+            damage_cap: Option<i32>,
+            base_damage: Option<f32>,
+            target_current_hp: Option<u64>,
+            target_max_hp: Option<u64>,
+            class_flags: Option<u32>,
+        }
+
+        let old = OldDamageEvent {
+            source: super::Actor::default(),
+            target: super::Actor::default(),
+            damage: 500,
+            flags: 0,
+            action_id: super::ActionType::Normal(1),
+            attack_rate: None,
+            stun_value: None,
+            damage_cap: Some(1_000),
+            base_damage: Some(2_000.0),
+            target_current_hp: Some(90),
+            target_max_hp: Some(100),
+            class_flags: Some(0x10000),
+        };
+        let blob = cbor4ii::serde::to_vec(Vec::new(), &old).expect("encode");
+        let new: DamageEvent = cbor4ii::serde::from_slice(&blob).expect("decode");
+
+        assert_eq!(new.damage, 500);
+        assert_eq!(new.class_flags, Some(0x10000));
+        assert_eq!(new.source_current_hp, None);
+        assert_eq!(new.source_max_hp, None);
+        assert_eq!(new.source_statuses, None);
+        assert_eq!(new.instance_snapshot, None);
+        assert_eq!(new.source_snapshot, None);
+        assert_eq!(new.record_snapshot, None);
+    }
+
+    /// "Captured, and the attacker held nothing" must survive a round trip as
+    /// something other than "not captured" — a consumer that cannot tell the two
+    /// apart would read an empty list as proof a buff was absent.
+    #[test]
+    fn an_empty_snapshot_is_distinct_from_an_absent_one() {
+        let mut event = DamageEvent {
+            source: super::Actor::default(),
+            target: super::Actor::default(),
+            damage: 1,
+            flags: 0,
+            action_id: super::ActionType::Normal(1),
+            attack_rate: None,
+            stun_value: None,
+            damage_cap: None,
+            base_damage: None,
+            target_current_hp: None,
+            target_max_hp: None,
+            class_flags: None,
+            source_current_hp: Some(4_200),
+            source_max_hp: Some(10_000),
+            source_statuses: Some(Vec::new()),
+            instance_snapshot: None,
+            source_snapshot: None,
+            record_snapshot: None,
+        };
+
+        let round_trip = |e: &DamageEvent| -> DamageEvent {
+            let blob = cbor4ii::serde::to_vec(Vec::new(), e).expect("encode");
+            cbor4ii::serde::from_slice(&blob).expect("decode")
+        };
+
+        let back = round_trip(&event);
+        assert_eq!(back.source_statuses, Some(Vec::new()));
+        assert_eq!(back.source_current_hp, Some(4_200));
+        assert_eq!(back.source_max_hp, Some(10_000));
+
+        event.source_statuses = Some(vec![
+            SourceStatus {
+                status_id: 4,
+                stacks: 3,
+                term_bits: None,
+            },
+            SourceStatus {
+                status_id: 0,
+                stacks: 1,
+                term_bits: None,
+            },
+        ]);
+        let back = round_trip(&event);
+        assert_eq!(
+            back.source_statuses,
+            Some(vec![
+                SourceStatus {
+                    status_id: 4,
+                    stacks: 3,
+                    term_bits: None,
+                },
+                SourceStatus {
+                    status_id: 0,
+                    stacks: 1,
+                    term_bits: None,
+                },
+            ])
+        );
+
+        event.source_statuses = None;
+        assert_eq!(round_trip(&event).source_statuses, None);
+    }
+
+    /// The raw snapshot windows and a status's cached term survive a round
+    /// trip byte-for-byte and bit-for-bit, through both wire formats: bincode
+    /// (hook -> app) and the `serde_bytes`-encoded CBOR the app writes to
+    /// disk.
+    #[test]
+    fn snapshot_windows_and_a_term_round_trip_through_both_formats() {
+        let event = DamageEvent {
+            source: super::Actor::default(),
+            target: super::Actor::default(),
+            damage: 999,
+            flags: 0,
+            action_id: super::ActionType::Normal(2),
+            attack_rate: None,
+            stun_value: None,
+            damage_cap: None,
+            base_damage: None,
+            target_current_hp: None,
+            target_max_hp: None,
+            class_flags: None,
+            source_current_hp: None,
+            source_max_hp: None,
+            source_statuses: Some(vec![SourceStatus {
+                status_id: 7,
+                stacks: 2,
+                term_bits: Some(0x3F800000), // 1.0f32
+            }]),
+            instance_snapshot: Some((0u8..64).collect()),
+            source_snapshot: Some(vec![0xAA; 32]),
+            record_snapshot: Some(vec![0x55; 16]),
+        };
+
+        let cbor_back: DamageEvent = {
+            let blob = cbor4ii::serde::to_vec(Vec::new(), &event).expect("cbor encode");
+            cbor4ii::serde::from_slice(&blob).expect("cbor decode")
+        };
+        assert_eq!(cbor_back.instance_snapshot, event.instance_snapshot);
+        assert_eq!(cbor_back.source_snapshot, event.source_snapshot);
+        assert_eq!(cbor_back.record_snapshot, event.record_snapshot);
+        assert_eq!(cbor_back.source_statuses, event.source_statuses);
+
+        let bincode_back: DamageEvent = {
+            let blob = super::bincode::serialize(&event).expect("bincode encode");
+            super::bincode::deserialize(&blob).expect("bincode decode")
+        };
+        assert_eq!(bincode_back.instance_snapshot, event.instance_snapshot);
+        assert_eq!(bincode_back.source_snapshot, event.source_snapshot);
+        assert_eq!(bincode_back.record_snapshot, event.record_snapshot);
+        assert_eq!(bincode_back.source_statuses, event.source_statuses);
+    }
+}
+
+#[cfg(test)]
+mod transport_constants {
+    #[test]
+    fn tcp_addr_and_port_agree() {
+        assert_eq!(super::TCP_ADDR, format!("127.0.0.1:{}", super::TCP_PORT));
+    }
+}
