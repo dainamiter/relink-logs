@@ -148,11 +148,26 @@ jobs:
           $size = (Get-ChildItem -Recurse -File $root | Measure-Object -Property Length -Sum).Sum
           "portable folder: {0:N1} MB" -f ($size / 1MB)
 
+      # The launch-and-assert check. `continue-on-error` so a failure here does
+      # not skip the artifact upload below — the whole point of running it is to
+      # learn whether the WebView2 redirect held, and an answer either way is
+      # still worth the folder.
       - name: Smoke test the portable build
+        continue-on-error: true
         shell: pwsh
         run: pwsh -File ./scripts/smoke-test-portable.ps1 -AppDir "portable/$env:APP_NAME"
 
+      # After the smoke test's launch, so it reports the tree and the profile
+      # state that launch actually produced. Diagnostic, not a gate: the answer
+      # either way is what the next fix is based on, and a failing build must
+      # still hand over the exe.
+      - name: Diagnose the portable build
+        if: always()
+        shell: pwsh
+        run: pwsh -File ./scripts/diagnose-portable.ps1 -AppDir "portable/$env:APP_NAME"
+
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: relink-logs-portable-windows
           path: portable/${{ env.APP_NAME }}
