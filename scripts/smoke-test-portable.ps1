@@ -93,7 +93,16 @@ foreach ($dir in @($dataDir, $configDir, (Join-Path (Split-Path -Parent $exe) 'A
 }
 
 Write-Host "launching $exe"
-$process = Start-Process -FilePath $exe -PassThru
+# Best effort: the exe requires elevation and opens GUI windows. A headless
+# runner can refuse the launch (no interactive desktop), and that is not what
+# this script is testing — the directory assertions below still answer the
+# question, one of them either way.
+$process = $null
+try {
+    $process = Start-Process -FilePath $exe -PassThru
+} catch {
+    Write-Host "    could not launch: $($_.Exception.Message)"
+}
 # Long enough to reach WebView2 environment creation — the step that would
 # write into the profile if the redirect failed — without waiting on anything
 # that needs the game.

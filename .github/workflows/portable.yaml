@@ -132,7 +132,14 @@ jobs:
           $ErrorActionPreference = "Stop"
           $root = "portable/$env:APP_NAME"
           New-Item -ItemType Directory -Force -Path $root | Out-Null
-          Copy-Item "target/release/gbfr-logs.exe" "$root/$env:APP_NAME.exe"
+          # The unbundled binary is named after the Cargo package
+          # (`gbfr-logs.exe`); `productName` only renames the bundled MSI. The
+          # exe does not care what it is called — it resolves its data root from
+          # `current_exe()` — so give it the product name in the folder.
+          $exe = Get-ChildItem "target/release/*.exe" | Select-Object -First 1
+          if (-not $exe) { throw "no .exe in target/release — did the build step run?" }
+          Write-Host "binary: $($exe.Name) -> $env:APP_NAME.exe"
+          Copy-Item $exe.FullName "$root/$env:APP_NAME.exe"
           Copy-Item "target/release/hook.dll" "$root/hook.dll"
           Copy-Item "src-tauri/assets" $root -Recurse
           Copy-Item "src-tauri/lang" $root -Recurse
