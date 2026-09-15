@@ -1,4 +1,4 @@
-﻿# Vendors `tauri` and `wry`, patches both so the app owns where its files go,
+# Vendors `tauri` and `wry`, patches both so the app owns where its files go,
 # and leaves a `.cargo/config.toml` pointing cargo at the patched copies.
 #
 #   pwsh -File scripts/patch-deps-portable.ps1
@@ -105,12 +105,26 @@ function Invoke-VendoredPatch {
     if ($LASTEXITCODE -ne 0) { throw "tar exited $LASTEXITCODE for $crate" }
     $extracted = Join-Path $vendorRoot "$Name-$Version"
     if (-not (Test-Path $extracted)) { throw "tar did not produce $extracted" }
+
+    # RENAME, do not move the entries: `Get-ChildItem $x | Move-Item -Destination
+    # $y` flattens `$x`'s subdirectories into `$y`. It turned
+    # `tauri-1.8.3/scripts/ipc.js` into `tauri/ipc.js`, so the crate's own
+    # `include_str!("../scripts/ipc.js")` failed to compile — eight errors of the
+    # form "couldn't read vendor\tauri\src\../scripts/ipc.js".
     $target = Join-Path $vendorRoot $Name
-    Get-ChildItem -LiteralPath $extracted -Force | Move-Item -Destination $target
-    Remove-Item $extracted -Recurse -Force
+    if (Test-Path $target) { Remove-Item $target -Recurse -Force }
+    Rename-Item -LiteralPath $extracted -NewName $Name
     Remove-Item $crate -Force
     $fileCount = (Get-ChildItem -LiteralPath $target -Recurse -File -Force).Count
-    Note "    extracted $fileCount files to vendor/$Name"
+
+    # The patch below and the crate's own `include_str!` both depend on the
+    # directory layout surviving, so prove it did before going any further.
+    foreach ($required in @('scripts', 'src')) {
+        if (-not (Test-Path (Join-Path $target $required))) {
+            throw "$Name $Version vendored without its $required/ directory — the install is flattened or incomplete"
+        }
+    }
+    Note "    extracted $fileCount files to vendor/$Name (scripts/, src/ intact)"
 
     $file = Join-Path $target $RelativeFile
     if (-not (Test-Path $file)) {
