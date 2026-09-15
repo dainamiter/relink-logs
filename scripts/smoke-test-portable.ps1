@@ -112,7 +112,7 @@ $root = Split-Path -Parent $exe
 $expected = @(
     'data/logs.db',               # the app's own database, created in main()
     'config',                     # the hook's shared directory, created in prepare()
-    'AppData/Local/com.false',    # WebView2's user data folder
+    'AppData/Local/com.false',    # WebView2's profile: cache, localStorage, cookies
     'AppData/Roaming'             # window state
 )
 $missing = @()
@@ -126,8 +126,27 @@ foreach ($relative in $expected) {
     }
 }
 
-$junk = @(Test-Junk -Profile $roaming -Names $junkNames) +
-        @(Test-Junk -Profile $local -Names $junkNames)
+# The profile directories this app has ever created. An EMPTY one is tolerated:
+# Tauri v1 `create_dir_all`s `%LOCALAPPDATA%\<identifier>` before wry can be told
+# to use somewhere else, so a bare folder is expected. What must not be there is
+# a WebView2 profile inside it — `EBWebView` is the folder WebView2 creates in
+# whichever data directory it actually uses, so its presence is proof the
+# redirect failed, and its absence is proof it worked.
+$junk = @()
+foreach ($profile in @($roaming, $local)) {
+    foreach ($name in $junkNames) {
+        $path = Join-Path $profile $name
+        if (-not (Test-Path -LiteralPath $path)) { continue }
+        $contents = @(Get-ChildItem -LiteralPath $path -Force -ErrorAction SilentlyContinue)
+        if ($contents.Count -eq 0) {
+            Write-Host "  empty     $path (harmless)"
+            continue
+        }
+        Write-Host "  DIRTY     $path"
+        $contents | ForEach-Object { Write-Host "              $($_.Name)" }
+        $junk += $path
+    }
+}
 
 if ($process -and -not $process.HasExited) {
     Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
@@ -136,16 +155,18 @@ Get-Process -Name $ProcessName -ErrorAction SilentlyContinue | Stop-Process -For
 
 if ($junk.Count -gt 0) {
     Write-Host ''
-    Write-Host 'FAIL: the launch wrote outside its own directory:'
+    Write-Host 'FAIL: the launch wrote into the user profile:'
     $junk | ForEach-Object { Write-Host "  $_" }
+    Write-Host 'A WebView2 profile there means Tauri''s explicit userDataFolder won:'
+    Write-Host 'the wry patch from scripts/patch-wry-portable.ps1 did not take effect.'
     exit 1
 }
 
 if ($missing.Count -gt 0) {
     Write-Host ''
     Write-Host 'FAIL: the portable directory tree is incomplete.'
-    Write-Host 'If only AppData\Local\com.false is missing, the WebView2 user data'
-    Write-Host 'redirect did not take effect (WEBVIEW2_USER_DATA_FOLDER).'
+    Write-Host 'AppData/Local/com.false missing means WebView2 never created its'
+    Write-Host 'profile at all — check whether the app started (see the diagnostic).'
     exit 1
 }
 

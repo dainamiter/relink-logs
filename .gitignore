@@ -61,3 +61,10 @@ __pycache__/
 
 # Local machine config (logs.db path for scripts/log-size-report.mjs)
 .env
+
+# wry is vendored and patched on the build machine by
+# scripts/patch-wry-portable.ps1 (the portable build needs the WebView2 data
+# folder to come from the environment), and that script writes the cargo patch
+# it uses. Neither is committed: the script is the source of truth.
+/vendor/
+/.cargo/config.toml

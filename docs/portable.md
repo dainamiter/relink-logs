@@ -39,21 +39,41 @@ AppData/
 | --- | --- | --- |
 | `logs.db`, `settings.db` next to the installed exe (the CWD, which a shortcut pinned to the install directory) | `data/` | `src-tauri/src/portable.rs`, `data_paths.rs` |
 | `%APPDATA%\gbfr-logs\hook-config.json`, `gbfr-logs.txt` (the injected hook's readings) | `config/` | the app passes `GBFR_LOGS_DATA_DIR`; the hook falls back to its own DLL path (`src-hook/src/data_paths.rs`) |
-| `%LOCALAPPDATA%\com.false` (WebView2 user data) | `AppData/Local/com.false` | `WEBVIEW2_USER_DATA_FOLDER` set in `portable::prepare()` |
+| `%LOCALAPPDATA%\com.false` (WebView2 user data) | `AppData/Local/com.false` | `WEBVIEW2_USER_DATA_FOLDER` **plus a patched wry** — see below |
 | `%APPDATA%\com.false\.window-state` | `AppData/Roaming/.window-state` | `tauri-plugin-window-state` removed; `src-tauri/src/window_state.rs` replaces it |
 
-The WebView2 folder is the awkward one: Tauri v1 hardcodes it to
-`{FOLDERID_LocalAppData}\<bundle identifier>` in `WindowManager::prepare_window`,
-and `tauri.conf.json` has no setting for it. The WebView2 loader documents
-`WEBVIEW2_USER_DATA_FOLDER` as overriding the `userDataFolder` it is handed, so
-that variable is set before the first webview is created. The CI smoke test
-asserts the result rather than trusting the documentation: it launches the built
-exe and fails if `com.false` or `gbfr-logs` appears in either real AppData
-folder (resolved through the known-folder API, not the environment).
+### The WebView2 folder needs a patched wry
 
-`tauri-plugin-window-state` was replaced rather than redirected because it
-resolves `app_dir()` internally and there is no environment override for it in
-Tauri v1.
+This is the one path that could not be moved by configuration, and the fix is
+worth understanding before changing anything near it.
+
+Tauri v1 computes the WebView2 user data folder itself, in
+`WindowManager::prepare_window` — `dirs_next::data_local_dir()/<bundle identifier>`,
+i.e. `%LOCALAPPDATA%\com.false` — `create_dir_all`s it, and hands it to wry. wry
+passes it as the explicit `userDataFolder` argument of
+`CreateCoreWebView2EnvironmentWithOptions`, **and an explicit argument wins over
+the `WEBVIEW2_USER_DATA_FOLDER` environment variable.** That was measured, not
+assumed: setting the variable alone still produced
+`C:\Users\<user>\AppData\Local\com.false\EBWebView`.
+
+`tauri.conf.json` cannot configure it in v1 (the `dataDirectory` option is a v2
+addition), and the path is resolved through `dirs-next`, which reads the registry
+rather than `APPDATA`/`LOCALAPPDATA` — so no launcher script can redirect it
+either.
+
+So the build patches wry.
+`scripts/patch-wry-portable.ps1` runs before any cargo command: it downloads the
+crates.io package for the locked wry version into `vendor/wry` (gitignored),
+rewrites the one block in `src/webview/webview2/mod.rs` that decides
+`data_directory` so it is ignored when `WEBVIEW2_USER_DATA_FOLDER` is set, and
+writes `.cargo/config.toml` with a `[patch.crates-io]` entry. The patch asserts
+on the exact source text, so a wry upgrade fails the script loudly instead of
+silently shipping a build that writes to the profile again.
+
+A consequence worth knowing: Tauri still `create_dir_all`s its own
+`%LOCALAPPDATA%\com.false` before wry is involved, so that folder reappears —
+**empty**. The smoke test tolerates an empty one and fails on a populated one
+(`EBWebView` inside it is proof the redirect did not hold).
 
 ## Building
 

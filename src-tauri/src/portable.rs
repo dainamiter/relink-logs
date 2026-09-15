@@ -119,15 +119,15 @@ pub fn prepare() {
     std::env::set_var("APPDATA", env_path(roaming.clone()));
     std::env::set_var("LOCALAPPDATA", env_path(local.clone()));
 
-    // Tauri v1 hardcodes the WebView2 user data folder to
-    // `{FOLDERID_LocalAppData}\<bundle identifier>` in
-    // `WindowManager::prepare_window` — `tauri.conf.json` cannot configure it —
-    // and the WebView2 loader applies this variable as an override of the
-    // explicit folder it is handed. There is no in-app API for it, which is why
-    // this has to be an environment variable rather than an argument.
+    // Where WebView2 keeps its profile. An explicit `userDataFolder` wins over
+    // this, and Tauri v1 supplies one (`%LOCALAPPDATA%\<identifier>`) that no
+    // v1 config option can move — so the build vendors and patches wry to ignore
+    // that argument when this variable is set. See
+    // scripts/patch-wry-portable.ps1; without the patch this line alone was
+    // measured to have no effect.
     std::env::set_var(
         "WEBVIEW2_USER_DATA_FOLDER",
-        env_path(local.join(BUNDLE_IDENTIFIER)),
+        env_path(webview_data_dir().join(BUNDLE_IDENTIFIER)),
     );
 
     // How the injected hook finds this tree. It runs inside the game process,
