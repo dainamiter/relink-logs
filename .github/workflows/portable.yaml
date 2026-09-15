@@ -117,10 +117,14 @@ jobs:
         # place would rebuild it and blur which step failed.
         run: echo '{"build":{"beforeBuildCommand":""}}' > .tauri-release-config.json
 
-      # --no-bundle: no MSI and no updater artifacts — this build ships as a
-      # folder. The overlay config disables the frontend rebuild.
+      # `--bundles none`: no MSI and no updater artifacts — this build ships as
+      # a folder. Tauri v2 renamed this to `--no-bundle`; v1 has only
+      # `--bundles`, and `none` is the value that skips every bundler.
+      # `--config=` with an `=` on purpose: clap parses `--bundles` as a
+      # multi-value list and would otherwise swallow the next flag as a bundle
+      # name. The overlay config disables the frontend rebuild.
       - name: Build the app
-        run: npx tauri build --no-bundle --config .tauri-release-config.json
+        run: npx tauri build --bundles none --config=.tauri-release-config.json
 
       - name: Assemble the portable folder
         shell: pwsh
@@ -139,7 +143,7 @@ jobs:
 
       - name: Smoke test the portable build
         shell: pwsh
-        run: ./scripts/smoke-test-portable.ps1 -AppDir "portable/$env:APP_NAME"
+        run: pwsh -File ./scripts/smoke-test-portable.ps1 -AppDir "portable/$env:APP_NAME"
 
       - uses: actions/upload-artifact@v4
         with:

@@ -70,7 +70,7 @@ npm ci
 npm run build
 cargo build --release --package hook --features eject
 Copy-Item target/release/hook.dll src-tauri/hook.dll -Force
-npx tauri build --no-bundle
+npx tauri build --bundles none
 ```
 
 `target/release/gbfr-logs.exe` plus `hook.dll`, `assets/` and `lang/` from
